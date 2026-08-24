@@ -6,7 +6,7 @@ struct LightControlSection: View {
 
     var body: some View {
         HStack {
-            Label("Chamber Light", systemSymbol: .lightRecessedFill)
+            Label("Lumière", systemSymbol: .lightRecessedFill)
                 .font(.subheadline)
             Spacer()
             Toggle("", isOn: Binding(
