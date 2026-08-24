@@ -18,7 +18,7 @@ struct BedControlView: View {
                 Image(systemSymbol: .squareStack3dUp)
                     .font(.title2)
                     .foregroundStyle(.secondary)
-                Text("Bed")
+                Text("Tête")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
