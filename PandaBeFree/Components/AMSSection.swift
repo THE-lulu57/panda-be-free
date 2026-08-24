@@ -37,29 +37,6 @@ struct AMSSection: View {
             Label(headerLabel, systemSymbol: .tray2Fill)
                 .font(.subheadline)
                 .fontWeight(.medium)
-
-            Spacer()
-
-            HStack(spacing: 4) {
-                Image(systemSymbol: humidityIcon)
-                    .foregroundStyle(humidityColor)
-                    .font(.caption)
-                Text("\(amsUnit.humidityRaw)%")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Divider()
-                .frame(height: 14)
-
-            HStack(spacing: 2) {
-                Image(systemSymbol: .thermometerMedium)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text(verbatim: "\(Int(amsUnit.temperature.rounded()))°C")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
     }
 
