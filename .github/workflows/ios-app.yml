@@ -2,9 +2,6 @@ name: Build Unsigned IPA
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 jobs:
   build-ipa:
