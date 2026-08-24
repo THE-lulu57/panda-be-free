@@ -149,7 +149,13 @@ public final class PandaMQTTService: MQTTServiceProtocol, @unchecked Sendable {
         let data = command.payload()
         guard let jsonString = String(data: data, encoding: .utf8) else { return }
         appLog(.info, category: logCategory, "Sending to \(topic): \(jsonString)")
-        mqtt.publish(topic, withString: jsonString, qos: .qos1)
+        // QoS 0: the printer's local MQTT broker doesn't reliably PUBACK
+        // command messages, which made CocoaMQTT's QoS 1 delivery layer
+        // resend the same command every 5s (its hardcoded retryTimeInterval)
+        // until an ACK showed up — causing repeated homes / runaway jog
+        // commands on rapid taps. Delivery is already reliable at the
+        // TCP/TLS transport level on a local connection.
+        mqtt.publish(topic, withString: jsonString, qos: .qos0)
     }
 
     // MARK: - Payload Diff
