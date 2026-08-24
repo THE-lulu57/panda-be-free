@@ -39,14 +39,8 @@ struct FanSection: View {
                 FanGauge(label: "Part Cooling", speed255: printerState.partFanSpeed, editable: viewModel.isConnected) {
                     viewModel.setFanSpeed(fanIndex: 1, percent: $0)
                 }
-                FanGauge(label: auxFanLabel, speed255: printerState.auxFanSpeed, editable: viewModel.isConnected) {
+                FanGauge(label: "Hotend", speed255: printerState.heatbreakFanSpeed, editable: false) {
                     viewModel.setFanSpeed(fanIndex: 2, percent: $0)
-                }
-                FanGauge(label: "Hotend", speed255: printerState.heatbreakFanSpeed, editable: false) { _ in }
-                if printerState.chamberFanSpeed > 0 || printerState.chamberTemp > 0 {
-                    FanGauge(label: "Chamber", speed255: printerState.chamberFanSpeed, editable: viewModel.isConnected) {
-                        viewModel.setFanSpeed(fanIndex: 3, percent: $0)
-                    }
                 }
             }
         }
