@@ -32,16 +32,6 @@ struct TemperatureSection: View {
                     editable: viewModel.isConnected
                 ) { viewModel.setBedTemp($0) }
             }
-            if let chamber = state.chamberTemp, chamber > 0 {
-                TemperatureGauge(
-                    label: "Chamber",
-                    icon: .wind,
-                    current: chamber,
-                    target: nil,
-                    range: nil,
-                    editable: false
-                ) { _ in }
-            }
         }
         .padding()
         .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 12, style: .continuous))
