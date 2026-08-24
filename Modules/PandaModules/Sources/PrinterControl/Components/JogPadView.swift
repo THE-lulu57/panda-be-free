@@ -10,10 +10,10 @@ struct JogPadView: View {
             // Up: 10mm then 1mm (outer to inner)
             VStack(spacing: 4) {
                 DirectionalButton(systemSymbol: .chevronUp2) {
-                    viewModel.jogY(distance: 10)
+                    viewModel.jogY(distance: -10)
                 }
                 DirectionalButton(systemSymbol: .chevronUp) {
-                    viewModel.jogY(distance: 1)
+                    viewModel.jogY(distance: -1)
                 }
             }
 
@@ -51,10 +51,10 @@ struct JogPadView: View {
             // Down: 1mm then 10mm (inner to outer)
             VStack(spacing: 4) {
                 DirectionalButton(systemSymbol: .chevronDown) {
-                    viewModel.jogY(distance: -1)
+                    viewModel.jogY(distance: 1)
                 }
                 DirectionalButton(systemSymbol: .chevronDown2) {
-                    viewModel.jogY(distance: -10)
+                    viewModel.jogY(distance: 10)
                 }
             }
         }
