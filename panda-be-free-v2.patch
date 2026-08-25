@@ -1,0 +1,793 @@
+diff --git a/Modules/PandaModules/Package.swift b/Modules/PandaModules/Package.swift
+index 5d58662..0181dc2 100644
+--- a/Modules/PandaModules/Package.swift
++++ b/Modules/PandaModules/Package.swift
+@@ -12,6 +12,7 @@ let package = Package(
+         .library(name: "PandaUI", targets: ["PandaUI"]),
+         .library(name: "Onboarding", targets: ["Onboarding"]),
+         .library(name: "PrinterControl", targets: ["PrinterControl"]),
++        .library(name: "PrintFiles", targets: ["PrintFiles"]),
+         .library(name: "PandaNotifications", targets: ["PandaNotifications"]),
+     ],
+     dependencies: [
+@@ -19,6 +20,7 @@ let package = Package(
+         .package(url: "https://github.com/hmlongco/Navigator.git", from: "2.0.0"),
+         .package(url: "https://github.com/SFSafeSymbols/SFSafeSymbols.git", from: "7.0.0"),
+         .package(url: "https://github.com/markiv/SwiftUI-Shimmer.git", from: "1.5.1"),
++        .package(url: "https://github.com/weichsel/ZIPFoundation.git", from: "0.9.19"),
+     ],
+     targets: [
+         .target(
+@@ -36,6 +38,7 @@ let package = Package(
+                 "PandaModels",
+                 "PandaLogger",
+                 .product(name: "CocoaMQTT", package: "CocoaMQTT"),
++                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
+             ]
+         ),
+         .target(
+@@ -71,6 +74,18 @@ let package = Package(
+             ],
+             resources: [.process("Resources")]
+         ),
++        .target(
++            name: "PrintFiles",
++            dependencies: [
++                "PandaModels",
++                "PandaLogger",
++                "PandaUI",
++                "Networking",
++                "SFSafeSymbols",
++                .product(name: "NavigatorUI", package: "Navigator"),
++                .product(name: "Shimmer", package: "SwiftUI-Shimmer"),
++            ]
++        ),
+         .target(
+             name: "PandaNotifications",
+             dependencies: ["PandaModels", "SFSafeSymbols"]
+@@ -99,5 +114,9 @@ let package = Package(
+             name: "PandaNotificationsTests",
+             dependencies: ["PandaNotifications", "PandaModels"]
+         ),
++        .testTarget(
++            name: "PrintFilesTests",
++            dependencies: ["PrintFiles", "PandaModels", "Networking"]
++        ),
+     ]
+ )
+diff --git a/Modules/PandaModules/Sources/Networking/FTPSService.swift b/Modules/PandaModules/Sources/Networking/FTPSService.swift
+new file mode 100644
+index 0000000..d19162d
+--- /dev/null
++++ b/Modules/PandaModules/Sources/Networking/FTPSService.swift
+@@ -0,0 +1,251 @@
++import Foundation
++import Network
++import PandaLogger
++
++private let logCategory = "FTPS"
++
++public struct FTPFileEntry: Sendable, Equatable {
++    public let name: String
++    public let sizeBytes: Int64
++    public let isDirectory: Bool
++}
++
++public enum FTPSError: Error, LocalizedError {
++    case connectionFailed(String)
++    case unexpectedReply(String)
++    case dataConnectionFailed
++
++    public var errorDescription: String? {
++        switch self {
++        case let .connectionFailed(reason): "FTPS connection failed: \(reason)"
++        case let .unexpectedReply(reply): "Unexpected FTP reply: \(reply)"
++        case .dataConnectionFailed: "Could not open FTP data connection"
++        }
++    }
++}
++
++/// Minimal implicit-FTPS (port 990, TLS from the first byte) client — just
++/// capable enough to list and download files from a Bambu Lab printer's SD
++/// card over LAN.
++///
++/// Bambu printers only support *implicit* FTPS: the TLS handshake happens
++/// immediately on connect, there's no `AUTH TLS` upgrade step. That rules out
++/// Foundation/CFNetwork's old FTP APIs and most SPM FTP packages, which are
++/// built for explicit FTPS or plain FTP. This is a from-scratch client using
++/// Network.framework instead of a third-party dependency.
++///
++/// ⚠️ Not compiled or tested against a real printer yet — I have no Swift
++/// toolchain or Bambu hardware in this environment. The biggest risk areas,
++/// in order:
++/// 1. `readReply` / `readLine` assume one `receive()` call returns exactly
++///    one complete `\r\n`-terminated reply line. Real FTP servers can split
++///    a reply across TCP segments, or (for multi-line replies like some
++///    227/230 responses) send several lines under one reply code with a
++///    `-` continuation marker. This client does not handle that — if you
++///    see hangs or `unexpectedReply` errors, this is the first place to look.
++/// 2. The TLS verify block unconditionally accepts the printer's
++///    self-signed certificate, same trust model as the MQTT connection
++///    elsewhere in this codebase.
++/// 3. PASV data-channel encryption (`PROT P`) is assumed required; if Bambu's
++///    FTPS server actually expects `PROT C` (cleartext data channel) LIST/RETR
++///    will hang waiting for a TLS handshake that never comes.
++public actor FTPSService {
++    private var controlConnection: NWConnection?
++    private let host: String
++    private let accessCode: String
++    private let port: UInt16 = 990
++
++    public init(host: String, accessCode: String) {
++        self.host = host
++        self.accessCode = accessCode
++    }
++
++    public func connect() async throws {
++        let connection = try makeTLSConnection(host: host, port: port)
++        controlConnection = connection
++        try await waitUntilReady(connection)
++
++        _ = try await readReply(expecting: 220) // welcome banner
++        try await sendCommand("USER bblp", expecting: 331)
++        try await sendCommand("PASS \(accessCode)", expecting: 230)
++        try await sendCommand("PBSZ 0", expecting: 200)
++        try await sendCommand("PROT P", expecting: 200) // encrypt data channel too
++        try await sendCommand("TYPE I", expecting: 200) // binary mode
++        appLog(.info, category: logCategory, "FTPS session established with \(host)")
++    }
++
++    public func disconnect() {
++        controlConnection?.cancel()
++        controlConnection = nil
++    }
++
++    /// Lists files in a directory (non-recursive). `path` defaults to SD root.
++    public func list(path: String = "/") async throws -> [FTPFileEntry] {
++        let dataConnection = try await enterPassiveMode()
++        try await sendCommand("LIST \(path)", expecting: 150)
++        let raw = try await readAllData(from: dataConnection)
++        _ = try await readReply(expecting: 226) // transfer complete
++        return Self.parseListing(raw)
++    }
++
++    /// Downloads a whole file into memory. Bambu SD files (sliced
++    /// .gcode.3mf projects) are typically a few MB — fine on a phone over
++    /// LAN, but this is a full download with no resume/partial-read support.
++    public func download(path: String) async throws -> Data {
++        let dataConnection = try await enterPassiveMode()
++        try await sendCommand("RETR \(path)", expecting: 150)
++        let data = try await readAllData(from: dataConnection)
++        _ = try await readReply(expecting: 226)
++        return data
++    }
++
++    // MARK: - PASV / data connection
++
++    private func enterPassiveMode() async throws -> NWConnection {
++        let reply = try await sendCommand("PASV", expecting: 227)
++        guard let (ip, dataPort) = Self.parsePASVReply(reply) else {
++            throw FTPSError.unexpectedReply(reply)
++        }
++        let connection = try makeTLSConnection(host: ip, port: dataPort)
++        do {
++            try await waitUntilReady(connection)
++        } catch {
++            throw FTPSError.dataConnectionFailed
++        }
++        return connection
++    }
++
++    static func parsePASVReply(_ reply: String) -> (String, UInt16)? {
++        // e.g. "227 Entering Passive Mode (192,168,1,50,204,130)."
++        guard let open = reply.firstIndex(of: "("), let close = reply.firstIndex(of: ")") else { return nil }
++        let numbers = reply[reply.index(after: open)..<close]
++            .split(separator: ",")
++            .compactMap { Int($0) }
++        guard numbers.count == 6 else { return nil }
++        let ip = "\(numbers[0]).\(numbers[1]).\(numbers[2]).\(numbers[3])"
++        let port = UInt16(numbers[4] * 256 + numbers[5])
++        return (ip, port)
++    }
++
++    // MARK: - Connection setup
++
++    private func makeTLSConnection(host: String, port: UInt16) throws -> NWConnection {
++        let tlsOptions = NWProtocolTLS.Options()
++        sec_protocol_options_set_verify_block(
++            tlsOptions.securityProtocolOptions,
++            { _, _, complete in complete(true) }, // printer uses a self-signed cert
++            DispatchQueue(label: "ftps.tls.verify")
++        )
++        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
++            throw FTPSError.connectionFailed("invalid port \(port)")
++        }
++        let params = NWParameters(tls: tlsOptions, tcp: NWProtocolTCP.Options())
++        return NWConnection(host: .init(host), port: nwPort, using: params)
++    }
++
++    private func waitUntilReady(_ connection: NWConnection) async throws {
++        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
++            connection.stateUpdateHandler = { state in
++                switch state {
++                case .ready:
++                    continuation.resume()
++                case let .failed(error):
++                    continuation.resume(throwing: FTPSError.connectionFailed(error.localizedDescription))
++                case .cancelled:
++                    continuation.resume(throwing: FTPSError.connectionFailed("cancelled"))
++                default:
++                    break
++                }
++            }
++            connection.start(queue: .global(qos: .userInitiated))
++        }
++    }
++
++    // MARK: - Control connection I/O
++
++    @discardableResult
++    private func sendCommand(_ command: String, expecting code: Int) async throws -> String {
++        guard let connection = controlConnection else {
++            throw FTPSError.connectionFailed("not connected")
++        }
++        appLog(.debug, category: logCategory, "-> \(command.hasPrefix("PASS") ? "PASS ****" : command)")
++        try await send(command + "\r\n", on: connection)
++        return try await readReply(expecting: code)
++    }
++
++    private func send(_ string: String, on connection: NWConnection) async throws {
++        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
++            connection.send(content: string.data(using: .utf8), completion: .contentProcessed { error in
++                if let error {
++                    continuation.resume(throwing: error)
++                } else {
++                    continuation.resume()
++                }
++            })
++        }
++    }
++
++    private func readReply(expecting code: Int) async throws -> String {
++        guard let connection = controlConnection else {
++            throw FTPSError.connectionFailed("not connected")
++        }
++        let line = try await readLine(from: connection)
++        appLog(.debug, category: logCategory, "<- \(line)")
++        guard line.hasPrefix("\(code)") else {
++            throw FTPSError.unexpectedReply(line)
++        }
++        return line
++    }
++
++    /// See the risk note in the type header: assumes one reply per receive().
++    private func readLine(from connection: NWConnection) async throws -> String {
++        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
++            connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, _, error in
++                if let error {
++                    continuation.resume(throwing: error)
++                    return
++                }
++                guard let data, let text = String(data: data, encoding: .utf8) else {
++                    continuation.resume(throwing: FTPSError.unexpectedReply("(empty reply)"))
++                    return
++                }
++                continuation.resume(returning: text.trimmingCharacters(in: .whitespacesAndNewlines))
++            }
++        }
++    }
++
++    private func readAllData(from connection: NWConnection) async throws -> Data {
++        defer { connection.cancel() }
++        var collected = Data()
++        while true {
++            let (chunk, isComplete): (Data?, Bool) = try await withCheckedThrowingContinuation { continuation in
++                connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
++                    if let error {
++                        continuation.resume(throwing: error)
++                        return
++                    }
++                    continuation.resume(returning: (data, isComplete))
++                }
++            }
++            if let chunk { collected.append(chunk) }
++            if isComplete { break }
++        }
++        return collected
++    }
++
++    // MARK: - LIST parsing
++
++    /// Parses a Unix-style LIST response, e.g.:
++    /// "-rw-r--r-- 1 user group 1048576 Jan 01 12:00 model.gcode.3mf"
++    static func parseListing(_ data: Data) -> [FTPFileEntry] {
++        guard let text = String(data: data, encoding: .utf8) else { return [] }
++        return text.split(separator: "\n").compactMap { rawLine in
++            let line = rawLine.trimmingCharacters(in: .init(charactersIn: "\r"))
++            let parts = line.split(separator: " ", omittingEmptySubsequences: true)
++            guard parts.count >= 9, let size = Int64(parts[4]) else { return nil }
++            let isDirectory = parts[0].hasPrefix("d")
++            let name = parts[8...].joined(separator: " ")
++            return FTPFileEntry(name: name, sizeBytes: size, isDirectory: isDirectory)
++        }
++    }
++}
+diff --git a/Modules/PandaModules/Sources/Networking/PrintFileThumbnailExtractor.swift b/Modules/PandaModules/Sources/Networking/PrintFileThumbnailExtractor.swift
+new file mode 100644
+index 0000000..70c7a78
+--- /dev/null
++++ b/Modules/PandaModules/Sources/Networking/PrintFileThumbnailExtractor.swift
+@@ -0,0 +1,40 @@
++import Foundation
++import PandaLogger
++import ZIPFoundation
++
++private let logCategory = "ThumbnailExtractor"
++
++/// Pulls the plate thumbnail PNG out of a downloaded .gcode.3mf archive
++/// (a .gcode.3mf is a plain ZIP file). Confirmed against a real Bambu Lab A1
++/// export: the file lives at "Metadata/plate_1.png", generated alongside
++/// plate_no_light_1.png / top_1.png / pick_1.png — plate_1.png is the best
++/// one to show since it's centered and fully lit.
++public enum PrintFileThumbnailExtractor {
++    private static let candidatePaths = [
++        "Metadata/plate_1.png",
++        "Metadata/plate_no_light_1.png",
++    ]
++
++    /// Returns PNG data for the plate thumbnail, or nil if the archive
++    /// isn't a recognizable sliced Bambu project.
++    public static func extractThumbnail(from archiveData: Data) -> Data? {
++        guard let archive = try? Archive(data: archiveData, accessMode: .read) else {
++            appLog(.error, category: logCategory, "Could not open .gcode.3mf as a ZIP archive")
++            return nil
++        }
++
++        for path in candidatePaths {
++            guard let entry = archive[path] else { continue }
++            var extracted = Data()
++            do {
++                _ = try archive.extract(entry) { chunk in extracted.append(chunk) }
++                if !extracted.isEmpty {
++                    return extracted
++                }
++            } catch {
++                appLog(.error, category: logCategory, "Failed extracting \(path): \(error.localizedDescription)")
++            }
++        }
++        return nil
++    }
++}
+diff --git a/Modules/PandaModules/Sources/PandaModels/PrintFile.swift b/Modules/PandaModules/Sources/PandaModels/PrintFile.swift
+new file mode 100644
+index 0000000..4d099c0
+--- /dev/null
++++ b/Modules/PandaModules/Sources/PandaModels/PrintFile.swift
+@@ -0,0 +1,26 @@
++import Foundation
++
++/// A file listed on the printer's SD card via FTPS. Only .gcode.3mf files
++/// (already-sliced projects) are relevant for printing — other entries
++/// (folders, cache files) are filtered out before this model is built.
++public struct PrintFile: Identifiable, Sendable, Equatable {
++    /// Full path on the SD card, e.g. "SnoopyV2.gcode.3mf" — also what's
++    /// used as the FTPS RETR path and as the `url` in the project_file
++    /// print command.
++    public let path: String
++    public let sizeBytes: Int64
++    public let modifiedDate: Date?
++
++    public var id: String { path }
++
++    /// Filename without the SD card path prefix, for display.
++    public var displayName: String {
++        (path as NSString).lastPathComponent
++    }
++
++    public init(path: String, sizeBytes: Int64, modifiedDate: Date?) {
++        self.path = path
++        self.sizeBytes = sizeBytes
++        self.modifiedDate = modifiedDate
++    }
++}
+diff --git a/Modules/PandaModules/Sources/PandaModels/PrinterCommand.swift b/Modules/PandaModules/Sources/PandaModels/PrinterCommand.swift
+index 93dcc82..45489ae 100644
+--- a/Modules/PandaModules/Sources/PandaModels/PrinterCommand.swift
++++ b/Modules/PandaModules/Sources/PandaModels/PrinterCommand.swift
+@@ -14,6 +14,15 @@ public enum PrinterCommand {
+                             trayColor: String, nozzleTempMin: Int, nozzleTempMax: Int)
+     case getVersion
+     case pushAll
++    /// Starts printing a .gcode.3mf file already on the printer's SD card.
++    /// - filePath: path relative to the SD root, e.g. "my_model.gcode.3mf"
++    /// - plateGcode: e.g. "Metadata/plate_1.gcode" (from the 3mf's Metadata folder)
++    /// - amsMapping: nil = no AMS (single external spool). Otherwise one entry
++    ///   per filament color used in the plate, each value being the AMS tray
++    ///   index (0-3) it should be printed from.
++    case projectFile(filePath: String, plateGcode: String, subtaskName: String,
++                     useAMS: Bool, amsMapping: [Int]?, flowCalibration: Bool,
++                     bedLeveling: Bool, timelapse: Bool)
+ 
+     public enum DryingPreset: String, CaseIterable, Identifiable, Sendable {
+         case pla = "PLA"
+@@ -156,6 +165,29 @@ public enum PrinterCommand {
+             ["info": ["sequence_id": sequenceId, "command": "get_version"]]
+         case .pushAll:
+             ["pushing": ["sequence_id": sequenceId, "command": "pushall"]]
++        case let .projectFile(filePath, plateGcode, subtaskName, useAMS, amsMapping,
++                               flowCalibration, bedLeveling, timelapse):
++            ["print": [
++                "sequence_id": sequenceId,
++                "command": "project_file",
++                "param": plateGcode,
++                "project_id": "0",
++                "profile_id": "0",
++                "task_id": "0",
++                "subtask_id": "0",
++                "subtask_name": subtaskName,
++                "file": "",
++                "url": "file:///sdcard/\(filePath)",
++                "md5": "",
++                "timelapse": timelapse,
++                "bed_type": "auto",
++                "bed_leveling": bedLeveling,
++                "flow_cali": flowCalibration,
++                "vibration_cali": false,
++                "layer_inspect": false,
++                "use_ams": useAMS,
++                "ams_mapping": amsMapping ?? [],
++            ] as [String: Any]]
+         }
+ 
+         return try! JSONSerialization.data(withJSONObject: dict)
+@@ -178,6 +210,8 @@ public enum PrinterCommand {
+             "amsFilamentSetting(ams: \(amsId), tray: \(trayId), type: \(trayType))"
+         case .getVersion: "getVersion"
+         case .pushAll: "pushAll"
++        case let .projectFile(filePath, _, subtaskName, useAMS, _, _, _, _):
++            "projectFile(\(filePath), task: \(subtaskName), ams: \(useAMS))"
+         }
+     }
+ }
+diff --git a/Modules/PandaModules/Sources/PandaModels/SlicedProjectInfo.swift b/Modules/PandaModules/Sources/PandaModels/SlicedProjectInfo.swift
+new file mode 100644
+index 0000000..a26cb46
+--- /dev/null
++++ b/Modules/PandaModules/Sources/PandaModels/SlicedProjectInfo.swift
+@@ -0,0 +1,95 @@
++import Foundation
++
++/// One filament color slot used by a sliced project, as recorded by the
++/// slicer in `Metadata/project_settings.config` (a JSON file, despite the
++/// .config extension) inside the .gcode.3mf archive.
++///
++/// Important: this data is NOT tied to physical AMS trays. The slicer only
++/// knows "this project uses N colors of these types/hex values" — it has no
++/// idea which AMS slot the user will load them into later. The printer's
++/// touchscreen resolves that at print time by matching these fields against
++/// whatever is currently loaded in the AMS, and the app needs to do the same
++/// (see `AMSMappingSuggester`).
++public struct PlateFilament: Identifiable, Sendable, Equatable {
++    /// 0-based index — position in the slicer's filament arrays, and the
++    /// same index used by `ams_mapping` when starting the print.
++    public let index: Int
++    /// e.g. "GFL03". Matches `AMSTray.trayInfoIdx` when the exact same
++    /// filament SKU is loaded — the most reliable auto-match signal.
++    public let filamentId: String
++    /// e.g. "PLA", "PETG"
++    public let type: String
++    /// Hex color as written by the slicer, e.g. "#161616" (no alpha).
++    public let colorHex: String
++    /// e.g. "Bambu PLA Basic @BBL A1"
++    public let settingsName: String
++
++    public var id: Int { index }
++
++    /// Normalized to the app's RRGGBBAA format (used by `AMSTray.colorHex`)
++    /// so the two can be compared directly. Assumes full opacity.
++    public var normalizedRGBA: String {
++        colorHex.trimmingCharacters(in: CharacterSet(charactersIn: "#")).uppercased() + "FF"
++    }
++}
++
++/// Parsed subset of `Metadata/project_settings.config` needed to drive the
++/// print-launch screen: how many colors the plate uses, and what they are.
++public struct SlicedProjectInfo: Sendable, Equatable {
++    public let printerModel: String
++    public let filaments: [PlateFilament]
++
++    public var isMultiColor: Bool { filaments.count > 1 }
++
++    /// - Parameter jsonData: raw contents of Metadata/project_settings.config
++    /// Throws if the file isn't valid JSON or is missing the arrays this
++    /// needs — callers should treat that as "not a recognizable Bambu
++    /// project" rather than silently showing zero colors.
++    public static func parse(jsonData: Data) throws -> SlicedProjectInfo {
++        let root = try JSONDecoder().decode(RawProjectSettings.self, from: jsonData)
++
++        let count = min(
++            root.filamentColour.count,
++            root.filamentIds.count,
++            root.filamentType.count
++        )
++        guard count > 0 else {
++            throw ParseError.noFilamentsFound
++        }
++
++        let filaments = (0..<count).map { i in
++            PlateFilament(
++                index: i,
++                filamentId: root.filamentIds[i],
++                type: root.filamentType[i],
++                colorHex: root.filamentColour[i],
++                settingsName: root.filamentSettingsId.indices.contains(i)
++                    ? root.filamentSettingsId[i] : root.filamentType[i]
++            )
++        }
++
++        return SlicedProjectInfo(printerModel: root.printerModel, filaments: filaments)
++    }
++
++    public enum ParseError: Error {
++        case noFilamentsFound
++    }
++
++    /// Mirrors only the JSON keys we need — project_settings.config has
++    /// hundreds of slicer settings we don't care about.
++    private struct RawProjectSettings: Decodable {
++        let filamentColour: [String]
++        let filamentIds: [String]
++        let filamentType: [String]
++        let filamentSettingsId: [String]
++        let printerModel: String
++
++        enum CodingKeys: String, CodingKey {
++            case filamentColour = "filament_colour"
++            case filamentIds = "filament_ids"
++            case filamentType = "filament_type"
++            case filamentSettingsId = "filament_settings_id"
++            case printerModel = "printer_model"
++        }
++    }
++}
+diff --git a/Modules/PandaModules/Sources/PrintFiles/PrintFilesListView.swift b/Modules/PandaModules/Sources/PrintFiles/PrintFilesListView.swift
+new file mode 100644
+index 0000000..fcbf037
+--- /dev/null
++++ b/Modules/PandaModules/Sources/PrintFiles/PrintFilesListView.swift
+@@ -0,0 +1,83 @@
++import PandaModels
++import Shimmer
++import SwiftUI
++
++public struct PrintFilesListView: View {
++    @State private var viewModel: PrintFilesViewModel
++
++    public init(host: String, accessCode: String) {
++        _viewModel = State(initialValue: PrintFilesViewModel(host: host, accessCode: accessCode))
++    }
++
++    public var body: some View {
++        Group {
++            switch viewModel.loadState {
++            case .idle, .loading:
++                ProgressView("Reading SD card…")
++                    .frame(maxWidth: .infinity, maxHeight: .infinity)
++            case let .failed(message):
++                ContentUnavailableView {
++                    Label("Couldn't read SD card", systemImage: "sdcard.fill")
++                } description: {
++                    Text(message)
++                } actions: {
++                    Button("Retry") { Task { await viewModel.loadFiles() } }
++                }
++            case .loaded where viewModel.files.isEmpty:
++                ContentUnavailableView(
++                    "No print files found",
++                    systemImage: "sdcard.fill",
++                    description: Text("No .gcode.3mf files on the SD card.")
++                )
++            case .loaded:
++                List(viewModel.files) { file in
++                    PrintFileRow(file: file, thumbnail: viewModel.thumbnails[file.path])
++                        .onAppear { viewModel.loadThumbnailIfNeeded(for: file) }
++                }
++                .listStyle(.plain)
++            }
++        }
++        .navigationTitle("Print")
++        .task { await viewModel.loadFiles() }
++    }
++}
++
++private struct PrintFileRow: View {
++    let file: PrintFile
++    let thumbnail: Data?
++
++    var body: some View {
++        HStack(spacing: 12) {
++            thumbnailView
++                .frame(width: 56, height: 56)
++                .clipShape(RoundedRectangle(cornerRadius: 10))
++
++            VStack(alignment: .leading, spacing: 2) {
++                Text(file.displayName)
++                    .font(.body)
++                    .lineLimit(2)
++                Text(sizeLabel)
++                    .font(.caption)
++                    .foregroundStyle(.secondary)
++            }
++        }
++        .padding(.vertical, 4)
++    }
++
++    @ViewBuilder
++    private var thumbnailView: some View {
++        if let thumbnail, let uiImage = UIImage(data: thumbnail) {
++            Image(uiImage: uiImage)
++                .resizable()
++                .scaledToFill()
++        } else {
++            RoundedRectangle(cornerRadius: 10)
++                .fill(.quaternary)
++                .shimmering()
++        }
++    }
++
++    private var sizeLabel: String {
++        ByteCountFormatter.string(fromByteCount: file.sizeBytes, countStyle: .file)
++    }
++}
+diff --git a/Modules/PandaModules/Sources/PrintFiles/PrintFilesViewModel.swift b/Modules/PandaModules/Sources/PrintFiles/PrintFilesViewModel.swift
+new file mode 100644
+index 0000000..52fe690
+--- /dev/null
++++ b/Modules/PandaModules/Sources/PrintFiles/PrintFilesViewModel.swift
+@@ -0,0 +1,74 @@
++import Foundation
++import Networking
++import PandaLogger
++import PandaModels
++import SwiftUI
++
++private let logCategory = "PrintFiles"
++
++@MainActor
++@Observable
++public final class PrintFilesViewModel {
++    public enum LoadState: Equatable {
++        case idle
++        case loading
++        case loaded
++        case failed(String)
++    }
++
++    public private(set) var files: [PrintFile] = []
++    public private(set) var loadState: LoadState = .idle
++    /// Thumbnail PNG data per file path, filled in lazily as rows appear.
++    public private(set) var thumbnails: [String: Data] = [:]
++
++    private let host: String
++    private let accessCode: String
++    private var thumbnailTasks: [String: Task<Void, Never>] = [:]
++
++    public init(host: String, accessCode: String) {
++        self.host = host
++        self.accessCode = accessCode
++    }
++
++    public func loadFiles() async {
++        loadState = .loading
++        let service = FTPSService(host: host, accessCode: accessCode)
++        do {
++            try await service.connect()
++            let entries = try await service.list()
++            await service.disconnect()
++            files = entries
++                .filter { !$0.isDirectory && $0.name.lowercased().hasSuffix(".gcode.3mf") }
++                .map { PrintFile(path: $0.name, sizeBytes: $0.sizeBytes, modifiedDate: nil) }
++                .sorted { $0.displayName.localizedCompare($1.displayName) == .orderedAscending }
++            loadState = .loaded
++            appLog(.info, category: logCategory, "Listed \(files.count) print files")
++        } catch {
++            appLog(.error, category: logCategory, "Failed to list SD card: \(error.localizedDescription)")
++            loadState = .failed(error.localizedDescription)
++        }
++    }
++
++    /// Downloads a file and extracts its thumbnail the first time a row for
++    /// it appears on screen. Safe to call repeatedly — only one download
++    /// runs per file, and results are cached in `thumbnails`.
++    public func loadThumbnailIfNeeded(for file: PrintFile) {
++        guard thumbnails[file.path] == nil, thumbnailTasks[file.path] == nil else { return }
++
++        thumbnailTasks[file.path] = Task { [weak self] in
++            guard let self else { return }
++            let service = FTPSService(host: host, accessCode: accessCode)
++            do {
++                try await service.connect()
++                let data = try await service.download(path: file.path)
++                await service.disconnect()
++                if let thumbnail = PrintFileThumbnailExtractor.extractThumbnail(from: data) {
++                    await MainActor.run { self.thumbnails[file.path] = thumbnail }
++                }
++            } catch {
++                appLog(.error, category: logCategory, "Thumbnail load failed for \(file.path): \(error.localizedDescription)")
++            }
++            await MainActor.run { self.thumbnailTasks[file.path] = nil }
++        }
++    }
++}
+diff --git a/Modules/PandaModules/Tests/PrintFilesTests/FTPSServiceTests.swift b/Modules/PandaModules/Tests/PrintFilesTests/FTPSServiceTests.swift
+new file mode 100644
+index 0000000..329b6bb
+--- /dev/null
++++ b/Modules/PandaModules/Tests/PrintFilesTests/FTPSServiceTests.swift
+@@ -0,0 +1,36 @@
++import Foundation
++@testable import Networking
++import Testing
++
++struct FTPSServiceTests {
++    @Test("Parses a standard PASV reply")
++    func parsesPASVReply() {
++        let reply = "227 Entering Passive Mode (192,168,1,50,204,130)."
++        let result = FTPSService.parsePASVReply(reply)
++        #expect(result?.0 == "192.168.1.50")
++        #expect(result?.1 == 52354)
++    }
++
++    @Test("Returns nil for a malformed PASV reply")
++    func rejectsMalformedPASVReply() {
++        #expect(FTPSService.parsePASVReply("227 Entering Passive Mode") == nil)
++    }
++
++    @Test("Parses a Unix-style LIST listing, including files with spaces")
++    func parsesListing() {
++        let listing = """
++        -rw-r--r-- 1 root root 5242880 Jan 01 12:00 SnoopyV2.gcode.3mf\r
++        drwxr-xr-x 2 root root 4096 Jan 01 12:00 cache\r
++        -rw-r--r-- 1 root root 1048576 Jan 01 12:01 my model with spaces.gcode.3mf\r
++        """
++        let data = Data(listing.utf8)
++        let entries = FTPSService.parseListing(data)
++
++        #expect(entries.count == 3)
++        #expect(entries[0].name == "SnoopyV2.gcode.3mf")
++        #expect(entries[0].sizeBytes == 5_242_880)
++        #expect(entries[0].isDirectory == false)
++        #expect(entries[1].isDirectory == true)
++        #expect(entries[2].name == "my model with spaces.gcode.3mf")
++    }
++}
+diff --git a/PandaBeFree/App/PandaBeFreeApp.swift b/PandaBeFree/App/PandaBeFreeApp.swift
+index 3770526..8bf9e9f 100644
+--- a/PandaBeFree/App/PandaBeFreeApp.swift
++++ b/PandaBeFree/App/PandaBeFreeApp.swift
+@@ -2,6 +2,7 @@ import NavigatorUI
+ import Networking
+ import Onboarding
+ import PandaModels
++import PrintFiles
+ import PrinterControl
+ import SFSafeSymbols
+ import SwiftUI
+@@ -9,6 +10,7 @@ import SwiftUI
+ enum RootTab: Hashable {
+     case dashboard
+     case control
++    case print
+     case more
+ }
+ 
+@@ -47,6 +49,9 @@ struct PandaBeFreeApp: App {
+                             printerState: dashboardViewModel.printerState
+                         )
+                     }
++                    Tab("Print", systemImage: SFSymbol.trayFull.rawValue, value: RootTab.print) {
++                        PrintFilesListView(host: printerIP, accessCode: accessCode)
++                    }
+                     Tab("More", systemImage: SFSymbol.ellipsisCircle.rawValue, value: RootTab.more) {
+                         MoreView()
+                     }

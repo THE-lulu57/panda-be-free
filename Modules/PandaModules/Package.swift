@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "PandaUI", targets: ["PandaUI"]),
         .library(name: "Onboarding", targets: ["Onboarding"]),
         .library(name: "PrinterControl", targets: ["PrinterControl"]),
+        .library(name: "PrintFiles", targets: ["PrintFiles"]),
         .library(name: "PandaNotifications", targets: ["PandaNotifications"]),
     ],
     dependencies: [
@@ -19,6 +20,7 @@ let package = Package(
         .package(url: "https://github.com/hmlongco/Navigator.git", from: "2.0.0"),
         .package(url: "https://github.com/SFSafeSymbols/SFSafeSymbols.git", from: "7.0.0"),
         .package(url: "https://github.com/markiv/SwiftUI-Shimmer.git", from: "1.5.1"),
+        .package(url: "https://github.com/weichsel/ZIPFoundation.git", from: "0.9.19"),
     ],
     targets: [
         .target(
@@ -36,6 +38,7 @@ let package = Package(
                 "PandaModels",
                 "PandaLogger",
                 .product(name: "CocoaMQTT", package: "CocoaMQTT"),
+                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
             ]
         ),
         .target(
@@ -72,6 +75,18 @@ let package = Package(
             resources: [.process("Resources")]
         ),
         .target(
+            name: "PrintFiles",
+            dependencies: [
+                "PandaModels",
+                "PandaLogger",
+                "PandaUI",
+                "Networking",
+                "SFSafeSymbols",
+                .product(name: "NavigatorUI", package: "Navigator"),
+                .product(name: "Shimmer", package: "SwiftUI-Shimmer"),
+            ]
+        ),
+        .target(
             name: "PandaNotifications",
             dependencies: ["PandaModels", "SFSafeSymbols"]
         ),
@@ -98,6 +113,10 @@ let package = Package(
         .testTarget(
             name: "PandaNotificationsTests",
             dependencies: ["PandaNotifications", "PandaModels"]
+        ),
+        .testTarget(
+            name: "PrintFilesTests",
+            dependencies: ["PrintFiles", "PandaModels", "Networking"]
         ),
     ]
 )
