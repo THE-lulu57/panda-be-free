@@ -169,7 +169,7 @@ public actor FTPSService {
         guard let connection = controlConnection else {
             throw FTPSError.connectionFailed("not connected")
         }
-        appLog(.debug, category: logCategory, "-> \(command.hasPrefix("PASS") ? "PASS ****" : command)")
+        appLog(.info, category: logCategory, "-> \(command.hasPrefix("PASS") ? "PASS ****" : command)")
         try await send(command + "\r\n", on: connection)
         return try await readReply(expecting: code)
     }
@@ -191,7 +191,7 @@ public actor FTPSService {
             throw FTPSError.connectionFailed("not connected")
         }
         let line = try await readLine(from: connection)
-        appLog(.debug, category: logCategory, "<- \(line)")
+        appLog(.info, category: logCategory, "<- \(line)")
         guard line.hasPrefix("\(code)") else {
             throw FTPSError.unexpectedReply(line)
         }
