@@ -13,6 +13,7 @@
 		CC50035003500350035003AA /* PandaUI in Frameworks */ = {isa = PBXBuildFile; productRef = CC60036003600360036003AA /* PandaUI */; };
 		CC50039003900390039003AA /* Onboarding in Frameworks */ = {isa = PBXBuildFile; productRef = CC60039003900390039003AA /* Onboarding */; };
 		CC50040004000400040004BB /* PrinterControl in Frameworks */ = {isa = PBXBuildFile; productRef = CC60040004000400040004BB /* PrinterControl */; };
+		002D0BA5E110E4EB712A32C1 /* PrintFiles in Frameworks */ = {isa = PBXBuildFile; productRef = 1B54495AA24CDE062C64ECE9 /* PrintFiles */; };
 		CC50041004100410041004CC /* PandaNotifications in Frameworks */ = {isa = PBXBuildFile; productRef = CC60041004100410041004CC /* PandaNotifications */; };
 		CC50042004200420042004DD /* PandaLogger in Frameworks */ = {isa = PBXBuildFile; productRef = CC60042004200420042004DD /* PandaLogger */; };
 		CC50045004500450045004AA /* PandaModels in Frameworks */ = {isa = PBXBuildFile; productRef = CC60046004600460046004AA /* PandaModels */; };
@@ -92,6 +93,7 @@
 				CC50035003500350035003AA /* PandaUI in Frameworks */,
 				CC50039003900390039003AA /* Onboarding in Frameworks */,
 				CC50040004000400040004BB /* PrinterControl in Frameworks */,
+				002D0BA5E110E4EB712A32C1 /* PrintFiles in Frameworks */,
 				CC50041004100410041004CC /* PandaNotifications in Frameworks */,
 				CC50042004200420042004DD /* PandaLogger in Frameworks */,
 			);
@@ -197,6 +199,7 @@
 				CC60036003600360036003AA /* PandaUI */,
 				CC60039003900390039003AA /* Onboarding */,
 				CC60040004000400040004BB /* PrinterControl */,
+				1B54495AA24CDE062C64ECE9 /* PrintFiles */,
 				CC60041004100410041004CC /* PandaNotifications */,
 				CC60042004200420042004DD /* PandaLogger */,
 				CC90019001900190019001AA /* NavigatorUI */,
@@ -653,6 +656,10 @@
 		CC60040004000400040004BB /* PrinterControl */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = PrinterControl;
+		};
+		1B54495AA24CDE062C64ECE9 /* PrintFiles */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PrintFiles;
 		};
 		CC60041004100410041004CC /* PandaNotifications */ = {
 			isa = XCSwiftPackageProductDependency;

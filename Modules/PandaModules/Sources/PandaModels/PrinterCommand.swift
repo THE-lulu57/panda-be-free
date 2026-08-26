@@ -14,6 +14,15 @@ public enum PrinterCommand {
                             trayColor: String, nozzleTempMin: Int, nozzleTempMax: Int)
     case getVersion
     case pushAll
+    /// Starts printing a .gcode.3mf file already on the printer's SD card.
+    /// - filePath: path relative to the SD root, e.g. "my_model.gcode.3mf"
+    /// - plateGcode: e.g. "Metadata/plate_1.gcode" (from the 3mf's Metadata folder)
+    /// - amsMapping: nil = no AMS (single external spool). Otherwise one entry
+    ///   per filament color used in the plate, each value being the AMS tray
+    ///   index (0-3) it should be printed from.
+    case projectFile(filePath: String, plateGcode: String, subtaskName: String,
+                     useAMS: Bool, amsMapping: [Int]?, flowCalibration: Bool,
+                     bedLeveling: Bool, timelapse: Bool)
 
     public enum DryingPreset: String, CaseIterable, Identifiable, Sendable {
         case pla = "PLA"
@@ -156,6 +165,29 @@ public enum PrinterCommand {
             ["info": ["sequence_id": sequenceId, "command": "get_version"]]
         case .pushAll:
             ["pushing": ["sequence_id": sequenceId, "command": "pushall"]]
+        case let .projectFile(filePath, plateGcode, subtaskName, useAMS, amsMapping,
+                               flowCalibration, bedLeveling, timelapse):
+            ["print": [
+                "sequence_id": sequenceId,
+                "command": "project_file",
+                "param": plateGcode,
+                "project_id": "0",
+                "profile_id": "0",
+                "task_id": "0",
+                "subtask_id": "0",
+                "subtask_name": subtaskName,
+                "file": "",
+                "url": "file:///sdcard/\(filePath)",
+                "md5": "",
+                "timelapse": timelapse,
+                "bed_type": "auto",
+                "bed_leveling": bedLeveling,
+                "flow_cali": flowCalibration,
+                "vibration_cali": false,
+                "layer_inspect": false,
+                "use_ams": useAMS,
+                "ams_mapping": amsMapping ?? [],
+            ] as [String: Any]]
         }
 
         return try! JSONSerialization.data(withJSONObject: dict)
@@ -178,6 +210,8 @@ public enum PrinterCommand {
             "amsFilamentSetting(ams: \(amsId), tray: \(trayId), type: \(trayType))"
         case .getVersion: "getVersion"
         case .pushAll: "pushAll"
+        case let .projectFile(filePath, _, subtaskName, useAMS, _, _, _, _):
+            "projectFile(\(filePath), task: \(subtaskName), ams: \(useAMS))"
         }
     }
 }

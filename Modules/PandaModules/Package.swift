@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "PandaUI", targets: ["PandaUI"]),
         .library(name: "Onboarding", targets: ["Onboarding"]),
         .library(name: "PrinterControl", targets: ["PrinterControl"]),
+        .library(name: "PrintFiles", targets: ["PrintFiles"]),
         .library(name: "PandaNotifications", targets: ["PandaNotifications"]),
     ],
     dependencies: [
@@ -75,6 +76,14 @@ let package = Package(
             name: "PandaNotifications",
             dependencies: ["PandaModels", "SFSafeSymbols"]
         ),
+        .target(
+            name: "PrintFiles",
+            dependencies: [
+                "PandaModels",
+                "PandaLogger",
+                "Networking",
+            ]
+        ),
         .testTarget(
             name: "PandaLoggerTests",
             dependencies: ["PandaLogger", "PandaModels"]
@@ -98,6 +107,10 @@ let package = Package(
         .testTarget(
             name: "PandaNotificationsTests",
             dependencies: ["PandaNotifications", "PandaModels"]
+        ),
+        .testTarget(
+            name: "PrintFilesTests",
+            dependencies: ["PrintFiles", "PandaModels", "Networking"]
         ),
     ]
 )

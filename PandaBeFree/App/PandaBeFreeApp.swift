@@ -2,6 +2,7 @@ import NavigatorUI
 import Networking
 import Onboarding
 import PandaModels
+import PrintFiles
 import PrinterControl
 import SFSafeSymbols
 import SwiftUI
@@ -9,6 +10,7 @@ import SwiftUI
 enum RootTab: Hashable {
     case dashboard
     case control
+    case print
     case more
 }
 
@@ -46,6 +48,9 @@ struct PandaBeFreeApp: App {
                             isLightOn: dashboardViewModel.chamberLightOn,
                             printerState: dashboardViewModel.printerState
                         )
+                    }
+                    Tab("Print", systemImage: SFSymbol.trayFull.rawValue, value: RootTab.print) {
+                        PrintFilesListView(host: printerIP, accessCode: accessCode)
                     }
                     Tab("More", systemImage: SFSymbol.ellipsisCircle.rawValue, value: RootTab.more) {
                         MoreView()
