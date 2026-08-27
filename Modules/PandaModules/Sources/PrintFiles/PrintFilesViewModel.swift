@@ -37,6 +37,7 @@ public final class PrintFilesViewModel {
             try await service.connect()
             let entries = try await service.list()
             await service.disconnect()
+            appLog(.info, category: logCategory, "loadFiles received \(entries.count) entries from service.list()")
             files = entries
                 .filter { !$0.isDirectory && $0.name.lowercased().hasSuffix(".gcode.3mf") }
                 .map { PrintFile(path: $0.name, sizeBytes: $0.sizeBytes, modifiedDate: nil) }
