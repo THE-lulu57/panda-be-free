@@ -86,6 +86,9 @@ public actor FTPSService {
         try await sendCommand("LIST \(path)", expecting: 150)
         let raw = try await readAllData(from: dataConnection)
         _ = try await readReply(expecting: 226) // transfer complete
+        let rawText = String(data: raw, encoding: .utf8) ?? "(non-UTF8 data, \(raw.count) bytes)"
+        appLog(.info, category: logCategory, "Raw LIST response (\(raw.count) bytes): \(rawText.prefix(1000))")
+
         return Self.parseListing(raw)
     }
 
@@ -237,20 +240,42 @@ public actor FTPSService {
         }
         return collected
     }
-
+    
     // MARK: - LIST parsing
 
-    /// Parses a Unix-style LIST response, e.g.:
-    /// "-rw-r--r-- 1 user group 1048576 Jan 01 12:00 model.gcode.3mf"
+    /// Parses a LIST response line by line, trying both listing styles
+    /// embedded FTP servers commonly use — we don't know in advance which
+    /// one Bambu's firmware returns:
+    /// - Unix: "-rw-r--r-- 1 user group 1048576 Jan 01 12:00 model.gcode.3mf"
+    /// - DOS/Windows: "08-27-26  10:30AM         5242880 model.gcode.3mf"
+    ///   (or "<DIR>" instead of a size, for directories)
     static func parseListing(_ data: Data) -> [FTPFileEntry] {
         guard let text = String(data: data, encoding: .utf8) else { return [] }
         return text.split(separator: "\n").compactMap { rawLine in
             let line = rawLine.trimmingCharacters(in: .init(charactersIn: "\r"))
-            let parts = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard parts.count >= 9, let size = Int64(parts[4]) else { return nil }
-            let isDirectory = parts[0].hasPrefix("d")
-            let name = parts[8...].joined(separator: " ")
-            return FTPFileEntry(name: name, sizeBytes: size, isDirectory: isDirectory)
+            guard !line.isEmpty else { return nil }
+            return parseUnixLine(line) ?? parseDOSLine(line)
         }
     }
+
+    private static func parseUnixLine(_ line: Substring) -> FTPFileEntry? {
+        let parts = line.split(separator: " ", omittingEmptySubsequences: true)
+        guard parts.count >= 9, let size = Int64(parts[4]) else { return nil }
+        let isDirectory = parts[0].hasPrefix("d")
+        let name = parts[8...].joined(separator: " ")
+        return FTPFileEntry(name: name, sizeBytes: size, isDirectory: isDirectory)
+    }
+
+    private static func parseDOSLine(_ line: Substring) -> FTPFileEntry? {
+        let parts = line.split(separator: " ", omittingEmptySubsequences: true)
+        guard parts.count >= 4 else { return nil }
+        let isDirectory = parts[2] == "<DIR>"
+        let size = isDirectory ? 0 : (Int64(parts[2]) ?? -1)
+        guard isDirectory || size >= 0 else { return nil }
+        let name = parts[3...].joined(separator: " ")
+        return FTPFileEntry(name: name, sizeBytes: size, isDirectory: isDirectory)
+    }
 }
+
+
+    // 
