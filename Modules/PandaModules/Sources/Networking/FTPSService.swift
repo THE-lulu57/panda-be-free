@@ -258,7 +258,7 @@ public actor FTPSService {
         }
     }
 
-    private static func parseUnixLine(_ line: Substring) -> FTPFileEntry? {
+    private static func parseUnixLine(_ line: String) -> FTPFileEntry? {
         let parts = line.split(separator: " ", omittingEmptySubsequences: true)
         guard parts.count >= 9, let size = Int64(parts[4]) else { return nil }
         let isDirectory = parts[0].hasPrefix("d")
@@ -266,7 +266,7 @@ public actor FTPSService {
         return FTPFileEntry(name: name, sizeBytes: size, isDirectory: isDirectory)
     }
 
-    private static func parseDOSLine(_ line: Substring) -> FTPFileEntry? {
+    private static func parseDOSLine(_ line: String) -> FTPFileEntry? {
         let parts = line.split(separator: " ", omittingEmptySubsequences: true)
         guard parts.count >= 4 else { return nil }
         let isDirectory = parts[2] == "<DIR>"
