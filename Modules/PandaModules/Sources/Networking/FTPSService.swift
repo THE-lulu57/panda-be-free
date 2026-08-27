@@ -253,8 +253,8 @@ public actor FTPSService {
     ///   (or "<DIR>" instead of a size, for directories)
     static func parseListing(_ data: Data) -> [FTPFileEntry] {
         guard let text = String(data: data, encoding: .utf8) else { return [] }
-        return text.split(separator: "\n").compactMap { rawLine in
-            let line = rawLine.trimmingCharacters(in: .init(charactersIn: "\r"))
+        return text.split(whereSeparator: { $0.isNewline }).compactMap { rawLine in
+            let line = String(rawLine)
             guard !line.isEmpty else { return nil }
             return parseUnixLine(line) ?? parseDOSLine(line)
         }
