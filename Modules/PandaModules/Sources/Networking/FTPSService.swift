@@ -89,7 +89,9 @@ public actor FTPSService {
         let rawText = String(data: raw, encoding: .utf8) ?? "(non-UTF8 data, \(raw.count) bytes)"
         appLog(.info, category: logCategory, "Raw LIST response (\(raw.count) bytes): \(rawText.prefix(1000))")
 
-        return Self.parseListing(raw)
+        let parsed = Self.parseListing(raw)
+        appLog(.info, category: logCategory, "Parsed \(parsed.count) entries: \(parsed.map { "\($0.name)[dir=\($0.isDirectory)]" })")
+        return parsed
     }
 
     /// Downloads a whole file into memory. Bambu SD files (sliced
