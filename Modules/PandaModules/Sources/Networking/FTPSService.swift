@@ -146,13 +146,16 @@ public actor FTPSService {
 
     private func waitUntilReady(_ connection: NWConnection) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            connection.stateUpdateHandler = { state in
+            connection.stateUpdateHandler = { [weak connection] state in
                 switch state {
                 case .ready:
+                    connection?.stateUpdateHandler = nil
                     continuation.resume()
                 case let .failed(error):
+                    connection?.stateUpdateHandler = nil
                     continuation.resume(throwing: FTPSError.connectionFailed(error.localizedDescription))
                 case .cancelled:
+                    connection?.stateUpdateHandler = nil
                     continuation.resume(throwing: FTPSError.connectionFailed("cancelled"))
                 default:
                     break
@@ -161,6 +164,7 @@ public actor FTPSService {
             connection.start(queue: .global(qos: .userInitiated))
         }
     }
+
 
     // MARK: - Control connection I/O
 
