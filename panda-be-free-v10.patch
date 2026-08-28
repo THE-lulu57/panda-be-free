@@ -1,0 +1,120 @@
+diff --git a/Modules/PandaModules/Package.swift b/Modules/PandaModules/Package.swift
+index 91f7814..5eb5e4a 100644
+--- a/Modules/PandaModules/Package.swift
++++ b/Modules/PandaModules/Package.swift
+@@ -79,6 +79,7 @@ let package = Package(
+             dependencies: [
+                 "PandaModels",
+                 "PandaLogger",
++                "PandaUI",
+                 "Networking",
+             ]
+         ),
+diff --git a/Modules/PandaModules/Sources/PrintFiles/PrintConfirmationSheet.swift b/Modules/PandaModules/Sources/PrintFiles/PrintConfirmationSheet.swift
+index c735053..be5c7b9 100644
+--- a/Modules/PandaModules/Sources/PrintFiles/PrintConfirmationSheet.swift
++++ b/Modules/PandaModules/Sources/PrintFiles/PrintConfirmationSheet.swift
+@@ -1,4 +1,5 @@
+ import PandaModels
++import PandaUI
+ import SwiftUI
+ 
+ /// The options a person can toggle before starting a print — deliberately
+@@ -31,6 +32,7 @@ public struct PrintConfirmationSheet: View {
+     @State private var flowCalibration = true
+     @State private var timelapse = false
+     @State private var forcedTray: ForcedTraySelection = .auto
++    @State private var isColorPickerExpanded = false
+ 
+     public init(
+         file: PrintFile,
+@@ -42,8 +44,8 @@ public struct PrintConfirmationSheet: View {
+         self.onConfirm = onConfirm
+     }
+ 
+-    private var loadedTrays: [(unitId: Int, tray: AMSTray)] {
+-        amsUnits.flatMap { unit in unit.trays.filter { !$0.isEmpty }.map { (unit.unitId, $0) } }
++    private var hasAnyLoadedTray: Bool {
++        amsUnits.contains { $0.trays.contains { !$0.isEmpty } }
+     }
+ 
+     public var body: some View {
+@@ -55,20 +57,13 @@ public struct PrintConfirmationSheet: View {
+                     Toggle("Timelapse", isOn: $timelapse)
+                 }
+ 
+-                if !loadedTrays.isEmpty {
++                if hasAnyLoadedTray {
+                     Section {
+-                        Picker("Force color", selection: $forcedTray) {
+-                            Text("Auto (printer decides)").tag(ForcedTraySelection.auto)
+-                            ForEach(loadedTrays, id: \.tray.id) { entry in
+-                                HStack {
+-                                    if let color = entry.tray.color {
+-                                        Circle().fill(color).frame(width: 14, height: 14)
+-                                    }
+-                                    Text("AMS \(entry.unitId + 1) · Slot \(entry.tray.id + 1) — \(entry.tray.materialType ?? "")")
+-                                }
+-                                .tag(ForcedTraySelection.forced(unitId: entry.unitId, traySlot: entry.tray.id))
+-                            }
+-                        }
++                        DisclosureGroup(
++                            isExpanded: $isColorPickerExpanded,
++                            content: { colorForcingContent },
++                            label: { colorForcingLabel }
++                        )
+                     } footer: {
+                         Text("Only forces the first color of the print. Best for single-color files — for multi-color files, colors follow what's set in the slicer.")
+                     }
+@@ -110,7 +105,50 @@ public struct PrintConfirmationSheet: View {
+                     .padding(.vertical, 6)
+             }
+         }
+-        .presentationDetents([.medium])
++        .presentationDetents([.medium, .large])
++    }
++
++    private var colorForcingLabel: some View {
++        HStack {
++            Text("Force color")
++            Spacer()
++            if case let .forced(unitId, traySlot) = forcedTray,
++               let tray = amsUnits.first(where: { $0.unitId == unitId })?.trays.first(where: { $0.id == traySlot })
++            {
++                if let color = tray.color {
++                    Circle().fill(color).frame(width: 14, height: 14)
++                }
++                Text(tray.materialType ?? "")
++                    .foregroundStyle(.secondary)
++            } else {
++                Text("Auto").foregroundStyle(.secondary)
++            }
++        }
++    }
++
++    /// Reuses AMSTrayView — the same spool-card component shown on the
++    /// dashboard — so this looks and feels like the rest of the app instead
++    /// of a generic list picker.
++    private var colorForcingContent: some View {
++        VStack(spacing: 12) {
++            ForEach(amsUnits, id: \.unitId) { unit in
++                HStack(spacing: 8) {
++                    ForEach(unit.trays) { tray in
++                        AMSTrayView(
++                            tray: tray,
++                            slotLabel: "A\(tray.id + 1)",
++                            isActive: forcedTray == .forced(unitId: unit.unitId, traySlot: tray.id),
++                            onTap: tray.isEmpty ? nil : {
++                                forcedTray = (forcedTray == .forced(unitId: unit.unitId, traySlot: tray.id))
++                                    ? .auto
++                                    : .forced(unitId: unit.unitId, traySlot: tray.id)
++                            }
++                        )
++                    }
++                }
++            }
++        }
++        .padding(.vertical, 4)
+     }
+ }
+ 

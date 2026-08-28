@@ -79,6 +79,7 @@ let package = Package(
             dependencies: [
                 "PandaModels",
                 "PandaLogger",
+                "PandaUI",
                 "Networking",
             ]
         ),
