@@ -33,6 +33,7 @@ final class DashboardViewModel {
 
     let printerState = PrinterState()
     let cameraManager = CameraStreamManager()
+    let activePrintCache = ActivePrintCache()
 
     var mqttConnectionState: MQTTConnectionState = .disconnected
     var showDisconnectConfirmation = false
@@ -145,8 +146,18 @@ final class DashboardViewModel {
             for await payload in messageStream {
                 let wasFirstUpdate = self.printerState.lastUpdated == nil
                 let previousStgCur = self.printerState.stgCur
+                let previousGcodeState = self.printerState.gcodeState
                 self.printerState.apply(payload)
                 self.printerState.isConnected = true
+
+                // The active-print cache (thumbnail/time/weight for a print
+                // started from this app) is only relevant while printing —
+                // clear it the moment we leave RUNNING, whatever the reason
+                // (finished, failed, stopped, or a different print started
+                // some other way).
+                if previousGcodeState == "RUNNING", self.printerState.gcodeState != "RUNNING" {
+                    self.activePrintCache.clear()
+                }
 
                 if wasFirstUpdate {
                     appLog(.info, category: logCategory, "First printer data received — state: \(self.printerState.gcodeState)")

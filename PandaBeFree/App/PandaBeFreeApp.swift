@@ -50,7 +50,16 @@ struct PandaBeFreeApp: App {
                         )
                     }
                     Tab("Print", systemImage: SFSymbol.trayFull.rawValue, value: RootTab.print) {
-                        PrintFilesListView(host: printerIP, accessCode: accessCode)
+                        PrintFilesListView(
+                            host: printerIP,
+                            accessCode: accessCode,
+                            sendCommand: { dashboardViewModel.mqttServiceRef.sendCommand($0) },
+                            onPrintStarted: { file in
+                                dashboardViewModel.activePrintCache.startCaching(
+                                    file: file, host: printerIP, accessCode: accessCode
+                                )
+                            }
+                        )
                     }
                     Tab("More", systemImage: SFSymbol.ellipsisCircle.rawValue, value: RootTab.more) {
                         MoreView()

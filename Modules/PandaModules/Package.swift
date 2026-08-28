@@ -20,6 +20,7 @@ let package = Package(
         .package(url: "https://github.com/hmlongco/Navigator.git", from: "2.0.0"),
         .package(url: "https://github.com/SFSafeSymbols/SFSafeSymbols.git", from: "7.0.0"),
         .package(url: "https://github.com/markiv/SwiftUI-Shimmer.git", from: "1.5.1"),
+        .package(url: "https://github.com/weichsel/ZIPFoundation.git", from: "0.9.19"),
     ],
     targets: [
         .target(
@@ -37,6 +38,7 @@ let package = Package(
                 "PandaModels",
                 "PandaLogger",
                 .product(name: "CocoaMQTT", package: "CocoaMQTT"),
+                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
             ]
         ),
         .target(
@@ -73,16 +75,16 @@ let package = Package(
             resources: [.process("Resources")]
         ),
         .target(
-            name: "PandaNotifications",
-            dependencies: ["PandaModels", "SFSafeSymbols"]
-        ),
-        .target(
             name: "PrintFiles",
             dependencies: [
                 "PandaModels",
                 "PandaLogger",
                 "Networking",
             ]
+        ),
+        .target(
+            name: "PandaNotifications",
+            dependencies: ["PandaModels", "SFSafeSymbols"]
         ),
         .testTarget(
             name: "PandaLoggerTests",

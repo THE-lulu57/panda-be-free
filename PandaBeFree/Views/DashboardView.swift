@@ -88,6 +88,12 @@ struct DashboardView: View {
                     .redacted(reason: isLoading ? .placeholder : [])
                     .shimmering(active: isLoading)
 
+                if viewModel.printerState.gcodeState == "RUNNING",
+                   viewModel.activePrintCache.hasData || viewModel.activePrintCache.isLoading
+                {
+                    ActivePrintInfoCard(cache: viewModel.activePrintCache)
+                }
+
                 TemperatureSection(viewModel: viewModel)
                     .redacted(reason: isLoading ? .placeholder : [])
                     .shimmering(active: isLoading)
