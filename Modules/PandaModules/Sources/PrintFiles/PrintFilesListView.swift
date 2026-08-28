@@ -6,18 +6,21 @@ public struct PrintFilesListView: View {
     @State private var fileToConfirm: PrintFile?
     private let host: String
     private let accessCode: String
+    private let amsUnits: [(unitId: Int, trays: [AMSTray])]
     private let sendCommand: (PrinterCommand) -> Void
     private let onPrintStarted: (PrintFile) -> Void
 
     public init(
         host: String,
         accessCode: String,
+        amsUnits: [(unitId: Int, trays: [AMSTray])] = [],
         sendCommand: @escaping (PrinterCommand) -> Void = { _ in },
         onPrintStarted: @escaping (PrintFile) -> Void = { _ in }
     ) {
         _viewModel = State(initialValue: PrintFilesViewModel(host: host, accessCode: accessCode))
         self.host = host
         self.accessCode = accessCode
+        self.amsUnits = amsUnits
         self.sendCommand = sendCommand
         self.onPrintStarted = onPrintStarted
     }
@@ -58,13 +61,14 @@ public struct PrintFilesListView: View {
             .navigationTitle("Print")
             .task { await viewModel.loadFiles() }
             .sheet(item: $fileToConfirm) { file in
-                PrintConfirmationSheet(file: file) { options in
+                PrintConfirmationSheet(file: file, amsUnits: amsUnits) { options in
+                    let amsMapping = options.forcedTray.map { [$0.amsUnitId * 4 + $0.traySlot] }
                     sendCommand(.projectFile(
                         filePath: file.path,
                         plateGcode: "Metadata/plate_1.gcode",
                         subtaskName: file.displayName,
                         useAMS: true,
-                        amsMapping: nil, // let the printer auto-match, same as starting from its touchscreen
+                        amsMapping: amsMapping, // nil = let the printer auto-match, same as its touchscreen
                         flowCalibration: options.flowCalibration,
                         bedLeveling: options.bedLeveling,
                         timelapse: options.timelapse

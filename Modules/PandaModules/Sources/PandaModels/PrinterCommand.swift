@@ -171,6 +171,7 @@ public enum PrinterCommand {
                 "sequence_id": sequenceId,
                 "command": "project_file",
                 "param": plateGcode,
+                "plate_idx": 0,
                 "project_id": "0",
                 "profile_id": "0",
                 "task_id": "0",
@@ -186,7 +187,12 @@ public enum PrinterCommand {
                 "vibration_cali": false,
                 "layer_inspect": false,
                 "use_ams": useAMS,
-                "ams_mapping": amsMapping ?? [],
+                // Real captured traffic disagrees on the "no override" value:
+                // an empty ARRAY vs an empty STRING. Using the empty string
+                // here — matches OpenBambuAPI's own reference template AND a
+                // separately captured real payload, whereas the empty-array
+                // form only appeared in a wiki paraphrase, not a raw capture.
+                "ams_mapping": amsMapping.map { $0 as Any } ?? ("" as Any),
             ] as [String: Any]]
         }
 
