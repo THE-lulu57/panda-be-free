@@ -1,0 +1,117 @@
+diff --git a/Modules/PandaModules/Sources/Networking/ThreeMFMetadataExtractor.swift b/Modules/PandaModules/Sources/Networking/ThreeMFMetadataExtractor.swift
+index 8d4307c..5b9b281 100644
+--- a/Modules/PandaModules/Sources/Networking/ThreeMFMetadataExtractor.swift
++++ b/Modules/PandaModules/Sources/Networking/ThreeMFMetadataExtractor.swift
+@@ -10,23 +10,36 @@ private let logCategory = "3MFMetadata"
+ /// active-print cache shown on the dashboard while a print is running:
+ /// thumbnail, estimated time, filament weight.
+ public enum ThreeMFMetadataExtractor {
+-    private static let thumbnailPaths = [
+-        "Metadata/plate_1.png",
+-        "Metadata/plate_no_light_1.png",
+-    ]
+-
+     public static func extractSliceInfo(from archiveData: Data) -> Data? {
+         extract(entryPath: "Metadata/slice_info.config", from: archiveData)
+     }
+ 
+     /// Returns PNG data for the plate thumbnail, or nil if not present.
++    ///
++    /// The thumbnail's plate number in the filename doesn't always match the
++    /// gcode's — confirmed on a real file where the print gcode was
++    /// `plate_1.gcode` but the thumbnail was `plate_4.png`, not
++    /// `plate_1.png`. So this searches the archive's actual entries instead
++    /// of guessing a fixed name, preferring a plain "plate_N.png" over the
++    /// "_small" thumbnail variant when both exist.
+     public static func extractThumbnail(from archiveData: Data) -> Data? {
+-        for path in thumbnailPaths {
+-            if let data = extract(entryPath: path, from: archiveData) {
+-                return data
+-            }
++        guard let archive = try? Archive(data: archiveData, accessMode: .read) else {
++            appLog(.error, category: logCategory, "Could not open .gcode.3mf as a ZIP archive")
++            return nil
++        }
++
++        let candidates = archive.compactMap { entry -> String? in
++            let path = entry.path
++            guard path.hasPrefix("Metadata/plate_"), path.hasSuffix(".png") else { return nil }
++            return path
++        }
++        // Prefer the full-size thumbnail over "_small" or "no_light" variants.
++        let chosen = candidates.first { !$0.contains("_small") && !$0.contains("no_light") } ?? candidates.first
++        guard let path = chosen else {
++            appLog(.info, category: logCategory, "No plate thumbnail found in this archive")
++            return nil
+         }
+-        return nil
++        return extract(entryPath: path, from: archive)
+     }
+ 
+     private static func extract(entryPath: String, from archiveData: Data) -> Data? {
+@@ -34,6 +47,10 @@ public enum ThreeMFMetadataExtractor {
+             appLog(.error, category: logCategory, "Could not open .gcode.3mf as a ZIP archive")
+             return nil
+         }
++        return extract(entryPath: entryPath, from: archive)
++    }
++
++    private static func extract(entryPath: String, from archive: Archive) -> Data? {
+         guard let entry = archive[entryPath] else {
+             return nil
+         }
+diff --git a/Modules/PandaModules/Sources/PandaModels/PrinterCommand.swift b/Modules/PandaModules/Sources/PandaModels/PrinterCommand.swift
+index f9e02f0..eda4b66 100644
+--- a/Modules/PandaModules/Sources/PandaModels/PrinterCommand.swift
++++ b/Modules/PandaModules/Sources/PandaModels/PrinterCommand.swift
+@@ -165,34 +165,31 @@ public enum PrinterCommand {
+             ["info": ["sequence_id": sequenceId, "command": "get_version"]]
+         case .pushAll:
+             ["pushing": ["sequence_id": sequenceId, "command": "pushall"]]
+-        case let .projectFile(filePath, plateGcode, subtaskName, useAMS, amsMapping,
++        case let .projectFile(filePath, plateGcode, _, useAMS, amsMapping,
+                                flowCalibration, bedLeveling, timelapse):
++            // Payload rebuilt to mirror bambulabs_api's start_print_3mf
++            // (github.com/acse-ci223/bambulabs_api, pip package, has CI/pytest)
++            // — a real, tested, working implementation of this exact command,
++            // not a forum snippet or wiki paraphrase. Several fields differ
++            // from what this app sent before (url scheme, file, bed_type,
++            // vibration_cali, ams_mapping default) and multiple untested
++            // "boilerplate" fields (project_id, profile_id, task_id,
++            // subtask_id, subtask_name, md5, plate_idx) are dropped entirely
++            // since that library's tested, working payload doesn't send them.
+             ["print": [
+                 "sequence_id": sequenceId,
+                 "command": "project_file",
+                 "param": plateGcode,
+-                "plate_idx": 0,
+-                "project_id": "0",
+-                "profile_id": "0",
+-                "task_id": "0",
+-                "subtask_id": "0",
+-                "subtask_name": subtaskName,
+-                "file": "",
+-                "url": "file:///sdcard/\(filePath)",
+-                "md5": "",
+-                "timelapse": timelapse,
+-                "bed_type": "auto",
++                "file": filePath,
++                "url": "ftp:///\(filePath)",
++                "bed_type": "textured_plate",
+                 "bed_leveling": bedLeveling,
+                 "flow_cali": flowCalibration,
+-                "vibration_cali": false,
++                "vibration_cali": true,
+                 "layer_inspect": false,
++                "timelapse": timelapse,
+                 "use_ams": useAMS,
+-                // Real captured traffic disagrees on the "no override" value:
+-                // an empty ARRAY vs an empty STRING. Using the empty string
+-                // here — matches OpenBambuAPI's own reference template AND a
+-                // separately captured real payload, whereas the empty-array
+-                // form only appeared in a wiki paraphrase, not a raw capture.
+-                "ams_mapping": amsMapping.map { $0 as Any } ?? ("" as Any),
++                "ams_mapping": amsMapping ?? [0],
+             ] as [String: Any]]
+         }
+ 

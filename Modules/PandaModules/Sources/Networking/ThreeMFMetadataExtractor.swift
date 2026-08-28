@@ -10,23 +10,36 @@ private let logCategory = "3MFMetadata"
 /// active-print cache shown on the dashboard while a print is running:
 /// thumbnail, estimated time, filament weight.
 public enum ThreeMFMetadataExtractor {
-    private static let thumbnailPaths = [
-        "Metadata/plate_1.png",
-        "Metadata/plate_no_light_1.png",
-    ]
-
     public static func extractSliceInfo(from archiveData: Data) -> Data? {
         extract(entryPath: "Metadata/slice_info.config", from: archiveData)
     }
 
     /// Returns PNG data for the plate thumbnail, or nil if not present.
+    ///
+    /// The thumbnail's plate number in the filename doesn't always match the
+    /// gcode's — confirmed on a real file where the print gcode was
+    /// `plate_1.gcode` but the thumbnail was `plate_4.png`, not
+    /// `plate_1.png`. So this searches the archive's actual entries instead
+    /// of guessing a fixed name, preferring a plain "plate_N.png" over the
+    /// "_small" thumbnail variant when both exist.
     public static func extractThumbnail(from archiveData: Data) -> Data? {
-        for path in thumbnailPaths {
-            if let data = extract(entryPath: path, from: archiveData) {
-                return data
-            }
+        guard let archive = try? Archive(data: archiveData, accessMode: .read) else {
+            appLog(.error, category: logCategory, "Could not open .gcode.3mf as a ZIP archive")
+            return nil
         }
-        return nil
+
+        let candidates = archive.compactMap { entry -> String? in
+            let path = entry.path
+            guard path.hasPrefix("Metadata/plate_"), path.hasSuffix(".png") else { return nil }
+            return path
+        }
+        // Prefer the full-size thumbnail over "_small" or "no_light" variants.
+        let chosen = candidates.first { !$0.contains("_small") && !$0.contains("no_light") } ?? candidates.first
+        guard let path = chosen else {
+            appLog(.info, category: logCategory, "No plate thumbnail found in this archive")
+            return nil
+        }
+        return extract(entryPath: path, from: archive)
     }
 
     private static func extract(entryPath: String, from archiveData: Data) -> Data? {
@@ -34,6 +47,10 @@ public enum ThreeMFMetadataExtractor {
             appLog(.error, category: logCategory, "Could not open .gcode.3mf as a ZIP archive")
             return nil
         }
+        return extract(entryPath: entryPath, from: archive)
+    }
+
+    private static func extract(entryPath: String, from archive: Archive) -> Data? {
         guard let entry = archive[entryPath] else {
             return nil
         }

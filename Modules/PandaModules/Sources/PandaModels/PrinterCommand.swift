@@ -165,34 +165,31 @@ public enum PrinterCommand {
             ["info": ["sequence_id": sequenceId, "command": "get_version"]]
         case .pushAll:
             ["pushing": ["sequence_id": sequenceId, "command": "pushall"]]
-        case let .projectFile(filePath, plateGcode, subtaskName, useAMS, amsMapping,
+        case let .projectFile(filePath, plateGcode, _, useAMS, amsMapping,
                                flowCalibration, bedLeveling, timelapse):
+            // Payload rebuilt to mirror bambulabs_api's start_print_3mf
+            // (github.com/acse-ci223/bambulabs_api, pip package, has CI/pytest)
+            // — a real, tested, working implementation of this exact command,
+            // not a forum snippet or wiki paraphrase. Several fields differ
+            // from what this app sent before (url scheme, file, bed_type,
+            // vibration_cali, ams_mapping default) and multiple untested
+            // "boilerplate" fields (project_id, profile_id, task_id,
+            // subtask_id, subtask_name, md5, plate_idx) are dropped entirely
+            // since that library's tested, working payload doesn't send them.
             ["print": [
                 "sequence_id": sequenceId,
                 "command": "project_file",
                 "param": plateGcode,
-                "plate_idx": 0,
-                "project_id": "0",
-                "profile_id": "0",
-                "task_id": "0",
-                "subtask_id": "0",
-                "subtask_name": subtaskName,
-                "file": "",
-                "url": "file:///sdcard/\(filePath)",
-                "md5": "",
-                "timelapse": timelapse,
-                "bed_type": "auto",
+                "file": filePath,
+                "url": "ftp:///\(filePath)",
+                "bed_type": "textured_plate",
                 "bed_leveling": bedLeveling,
                 "flow_cali": flowCalibration,
-                "vibration_cali": false,
+                "vibration_cali": true,
                 "layer_inspect": false,
+                "timelapse": timelapse,
                 "use_ams": useAMS,
-                // Real captured traffic disagrees on the "no override" value:
-                // an empty ARRAY vs an empty STRING. Using the empty string
-                // here — matches OpenBambuAPI's own reference template AND a
-                // separately captured real payload, whereas the empty-array
-                // form only appeared in a wiki paraphrase, not a raw capture.
-                "ams_mapping": amsMapping.map { $0 as Any } ?? ("" as Any),
+                "ams_mapping": amsMapping ?? [0],
             ] as [String: Any]]
         }
 
