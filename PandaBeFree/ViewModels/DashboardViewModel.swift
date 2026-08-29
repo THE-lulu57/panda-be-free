@@ -151,10 +151,17 @@ final class DashboardViewModel {
                 self.printerState.isConnected = true
 
                 // The active-print cache (thumbnail/time/weight for a print
-                // started from this app) is only relevant while printing —
-                // clear it the moment we leave RUNNING, whatever the reason
-                // (finished, failed, stopped, or a different print started
-                // some other way).
+                // started from this app) is only relevant while printing.
+                // Trigger the deferred FTPS download only once the printer
+                // confirms it has actually started (RUNNING) — see
+                // ActivePrintCache's doc comment for why this can't happen
+                // at the moment the print command is sent instead. Clear it
+                // the moment we leave RUNNING, whatever the reason (finished,
+                // failed, stopped, or a different print started some other
+                // way).
+                if previousGcodeState != "RUNNING", self.printerState.gcodeState == "RUNNING" {
+                    self.activePrintCache.printingDidStart()
+                }
                 if previousGcodeState == "RUNNING", self.printerState.gcodeState != "RUNNING" {
                     self.activePrintCache.clear()
                 }
