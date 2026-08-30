@@ -14,6 +14,14 @@ public enum ThreeMFMetadataExtractor {
         extract(entryPath: "Metadata/slice_info.config", from: archiveData)
     }
 
+    /// Colors/filament info — extracted from the same already-downloaded
+    /// bytes used for the thumbnail, so this costs nothing extra over the
+    /// network. (See SlicedProjectColors.parse for why this file, not
+    /// slice_info.config, is the source for color data.)
+    public static func extractProjectSettings(from archiveData: Data) -> Data? {
+        extract(entryPath: "Metadata/project_settings.config", from: archiveData)
+    }
+
     /// Returns PNG data for the plate thumbnail, or nil if not present.
     ///
     /// The thumbnail's plate number in the filename doesn't always match the

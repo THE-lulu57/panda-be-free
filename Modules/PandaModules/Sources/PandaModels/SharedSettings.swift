@@ -73,6 +73,24 @@ public enum SharedSettings {
         !printerIP.isEmpty && !printerAccessCode.isEmpty
     }
 
+    // MARK: - Active Print Recovery
+
+    /// SD-card path of the file this app last told the printer to print.
+    /// Not sensitive (just a filename) — lets ActivePrintCache recover the
+    /// thumbnail/time/weight after a force-quit + relaunch while that same
+    /// print is still running, instead of losing them just because the
+    /// process restarted.
+    public static var lastStartedPrintFilePath: String? {
+        get { sharedDefaults?.string(forKey: "lastStartedPrintFilePath") }
+        set {
+            if let newValue {
+                sharedDefaults?.set(newValue, forKey: "lastStartedPrintFilePath")
+            } else {
+                sharedDefaults?.removeObject(forKey: "lastStartedPrintFilePath")
+            }
+        }
+    }
+
     // MARK: - Cached Snapshot
 
     private static var containerURL: URL? {

@@ -165,6 +165,14 @@ final class DashboardViewModel {
                 if previousGcodeState == "RUNNING", self.printerState.gcodeState != "RUNNING" {
                     self.activePrintCache.clear()
                 }
+                // Cheap no-op unless the app was just force-quit and
+                // relaunched while a print it started is still RUNNING —
+                // see ActivePrintCache's doc comment.
+                self.activePrintCache.recoverIfNeeded(
+                    gcodeState: self.printerState.gcodeState,
+                    host: SharedSettings.printerIP,
+                    accessCode: SharedSettings.printerAccessCode
+                )
 
                 if wasFirstUpdate {
                     appLog(.info, category: logCategory, "First printer data received — state: \(self.printerState.gcodeState)")
