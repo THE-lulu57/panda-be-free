@@ -1,0 +1,596 @@
+diff --git a/Modules/PandaModules/Package.swift b/Modules/PandaModules/Package.swift
+index 5eb5e4a..91f7814 100644
+--- a/Modules/PandaModules/Package.swift
++++ b/Modules/PandaModules/Package.swift
+@@ -79,7 +79,6 @@ let package = Package(
+             dependencies: [
+                 "PandaModels",
+                 "PandaLogger",
+-                "PandaUI",
+                 "Networking",
+             ]
+         ),
+diff --git a/Modules/PandaModules/Sources/Networking/FTPSService.swift b/Modules/PandaModules/Sources/Networking/FTPSService.swift
+index 869d3a9..4cb0a49 100644
+--- a/Modules/PandaModules/Sources/Networking/FTPSService.swift
++++ b/Modules/PandaModules/Sources/Networking/FTPSService.swift
+@@ -80,15 +80,23 @@ public actor FTPSService {
+         controlConnection = nil
+     }
+ 
++    /// Deletes a file on the SD card. Standard FTP DELE — no data channel
++    /// needed, just a control-connection command/reply like USER/PASS.
++    public func delete(path: String) async throws {
++        try await sendCommand("DELE \(path)", expecting: 250)
++    }
++
+     /// Lists files in a directory (non-recursive). `path` defaults to SD root.
+     public func list(path: String = "/") async throws -> [FTPFileEntry] {
+         let dataConnection = try await enterPassiveMode()
+         try await sendCommand("LIST \(path)", expecting: 150)
+         let raw = try await readAllData(from: dataConnection)
+         _ = try await readReply(expecting: 226) // transfer complete
++        // Diagnostic: log the raw listing text so an unrecognized server
++        // format shows up directly in the session log instead of silently
++        // parsing to zero entries.
+         let rawText = String(data: raw, encoding: .utf8) ?? "(non-UTF8 data, \(raw.count) bytes)"
+         appLog(.info, category: logCategory, "Raw LIST response (\(raw.count) bytes): \(rawText.prefix(1000))")
+-
+         let parsed = Self.parseListing(raw)
+         appLog(.info, category: logCategory, "Parsed \(parsed.count) entries: \(parsed.map { "\($0.name)[dir=\($0.isDirectory)]" })")
+         return parsed
+@@ -149,6 +157,17 @@ public actor FTPSService {
+         return NWConnection(host: .init(host), port: nwPort, using: params)
+     }
+ 
++    /// Bridges NWConnection's state callback to async/await.
++    ///
++    /// ⚠️ Important: `stateUpdateHandler` is NOT a one-shot callback — it
++    /// stays attached to the connection and fires again on every later state
++    /// change (in particular `.cancelled`, when `disconnect()` or the
++    /// `defer { connection.cancel() }` in `readAllData` runs). If left in
++    /// place after the continuation resumes once, that later `.cancelled`
++    /// event calls `continuation.resume()` a second time, which is a fatal
++    /// Swift Concurrency error ("SWIFT TASK CONTINUATION MISUSE") — an
++    /// unrecoverable crash, not a catchable error. Clearing the handler the
++    /// moment we resume is what prevents that.
+     private func waitUntilReady(_ connection: NWConnection) async throws {
+         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+             connection.stateUpdateHandler = { [weak connection] state in
+@@ -170,7 +189,6 @@ public actor FTPSService {
+         }
+     }
+ 
+-
+     // MARK: - Control connection I/O
+ 
+     @discardableResult
+@@ -242,7 +260,7 @@ public actor FTPSService {
+         }
+         return collected
+     }
+-    
++
+     // MARK: - LIST parsing
+ 
+     /// Parses a LIST response line by line, trying both listing styles
+@@ -269,8 +287,11 @@ public actor FTPSService {
+     }
+ 
+     private static func parseDOSLine(_ line: String) -> FTPFileEntry? {
++        // e.g. "08-27-26  10:30AM         5242880 model.gcode.3mf"
++        //   or "08-27-26  10:30AM       <DIR>          cache"
+         let parts = line.split(separator: " ", omittingEmptySubsequences: true)
+         guard parts.count >= 4 else { return nil }
++        // parts[0] = date, parts[1] = time, parts[2] = size or "<DIR>"
+         let isDirectory = parts[2] == "<DIR>"
+         let size = isDirectory ? 0 : (Int64(parts[2]) ?? -1)
+         guard isDirectory || size >= 0 else { return nil }
+@@ -278,6 +299,3 @@ public actor FTPSService {
+         return FTPFileEntry(name: name, sizeBytes: size, isDirectory: isDirectory)
+     }
+ }
+-
+-
+-    // 
+diff --git a/Modules/PandaModules/Sources/PrintFiles/PrintConfirmationSheet.swift b/Modules/PandaModules/Sources/PrintFiles/PrintConfirmationSheet.swift
+index be5c7b9..b71b518 100644
+--- a/Modules/PandaModules/Sources/PrintFiles/PrintConfirmationSheet.swift
++++ b/Modules/PandaModules/Sources/PrintFiles/PrintConfirmationSheet.swift
+@@ -1,53 +1,36 @@
+ import PandaModels
+-import PandaUI
+ import SwiftUI
+ 
+ /// The options a person can toggle before starting a print — deliberately
+-/// small. No per-file color *preview* here: that would require downloading
++/// small. No per-file color preview here: that would require downloading
+ /// the whole file first (some are 20+ MB, meaning a multi-minute wait on
+ /// this printer's known-slow LAN transfer — see chat), just to show
+ /// something the printer already decides on its own when you start from its
+ /// touchscreen.
+ ///
+-/// The one exception is `forcedTray`: forcing a single AMS slot doesn't need
+-/// the file at all — it only uses the AMS state the app already has live via
+-/// MQTT. Meant for mono-color files (a full multi-color remap still isn't
+-/// supported — see the warning text below).
++/// A manual AMS color-forcing picker used to live here (reusing AMSTrayView)
++/// but was removed — it didn't fit visually in this sheet. Colors always
++/// follow whatever the slicer set; see the warning text below.
+ public struct PrintOptions {
+     public var bedLeveling: Bool
+     public var flowCalibration: Bool
+     public var timelapse: Bool
+-    /// (amsUnitId, traySlot) if the person forced a specific spool, else nil
+-    /// (printer decides, same as starting from its own screen).
+-    public var forcedTray: (amsUnitId: Int, traySlot: Int)?
+ }
+ 
+ public struct PrintConfirmationSheet: View {
+     @Environment(\.dismiss) private var dismiss
+     let file: PrintFile
+-    let amsUnits: [(unitId: Int, trays: [AMSTray])]
+     let onConfirm: (PrintOptions) -> Void
+ 
+     @State private var bedLeveling = true
+     @State private var flowCalibration = true
+     @State private var timelapse = false
+-    @State private var forcedTray: ForcedTraySelection = .auto
+-    @State private var isColorPickerExpanded = false
+ 
+-    public init(
+-        file: PrintFile,
+-        amsUnits: [(unitId: Int, trays: [AMSTray])] = [],
+-        onConfirm: @escaping (PrintOptions) -> Void
+-    ) {
++    public init(file: PrintFile, onConfirm: @escaping (PrintOptions) -> Void) {
+         self.file = file
+-        self.amsUnits = amsUnits
+         self.onConfirm = onConfirm
+     }
+ 
+-    private var hasAnyLoadedTray: Bool {
+-        amsUnits.contains { $0.trays.contains { !$0.isEmpty } }
+-    }
+-
+     public var body: some View {
+         NavigationStack {
+             List {
+@@ -57,18 +40,6 @@ public struct PrintConfirmationSheet: View {
+                     Toggle("Timelapse", isOn: $timelapse)
+                 }
+ 
+-                if hasAnyLoadedTray {
+-                    Section {
+-                        DisclosureGroup(
+-                            isExpanded: $isColorPickerExpanded,
+-                            content: { colorForcingContent },
+-                            label: { colorForcingLabel }
+-                        )
+-                    } footer: {
+-                        Text("Only forces the first color of the print. Best for single-color files — for multi-color files, colors follow what's set in the slicer.")
+-                    }
+-                }
+-
+                 Section {
+                     Label(
+                         "This will print with the filament colors set in the slicer. To change colors, start the print from the printer's screen instead.",
+@@ -89,8 +60,7 @@ public struct PrintConfirmationSheet: View {
+                         onConfirm(PrintOptions(
+                             bedLeveling: bedLeveling,
+                             flowCalibration: flowCalibration,
+-                            timelapse: timelapse,
+-                            forcedTray: forcedTray.tray
++                            timelapse: timelapse
+                         ))
+                     }
+                     .fontWeight(.semibold)
+@@ -105,58 +75,6 @@ public struct PrintConfirmationSheet: View {
+                     .padding(.vertical, 6)
+             }
+         }
+-        .presentationDetents([.medium, .large])
+-    }
+-
+-    private var colorForcingLabel: some View {
+-        HStack {
+-            Text("Force color")
+-            Spacer()
+-            if case let .forced(unitId, traySlot) = forcedTray,
+-               let tray = amsUnits.first(where: { $0.unitId == unitId })?.trays.first(where: { $0.id == traySlot })
+-            {
+-                if let color = tray.color {
+-                    Circle().fill(color).frame(width: 14, height: 14)
+-                }
+-                Text(tray.materialType ?? "")
+-                    .foregroundStyle(.secondary)
+-            } else {
+-                Text("Auto").foregroundStyle(.secondary)
+-            }
+-        }
+-    }
+-
+-    /// Reuses AMSTrayView — the same spool-card component shown on the
+-    /// dashboard — so this looks and feels like the rest of the app instead
+-    /// of a generic list picker.
+-    private var colorForcingContent: some View {
+-        VStack(spacing: 12) {
+-            ForEach(amsUnits, id: \.unitId) { unit in
+-                HStack(spacing: 8) {
+-                    ForEach(unit.trays) { tray in
+-                        AMSTrayView(
+-                            tray: tray,
+-                            slotLabel: "A\(tray.id + 1)",
+-                            isActive: forcedTray == .forced(unitId: unit.unitId, traySlot: tray.id),
+-                            onTap: tray.isEmpty ? nil : {
+-                                forcedTray = (forcedTray == .forced(unitId: unit.unitId, traySlot: tray.id))
+-                                    ? .auto
+-                                    : .forced(unitId: unit.unitId, traySlot: tray.id)
+-                            }
+-                        )
+-                    }
+-                }
+-            }
+-        }
+-        .padding(.vertical, 4)
+-    }
+-}
+-
+-private enum ForcedTraySelection: Hashable {
+-    case auto
+-    case forced(unitId: Int, traySlot: Int)
+-
+-    var tray: (amsUnitId: Int, traySlot: Int)? {
+-        if case let .forced(unitId, traySlot) = self { (unitId, traySlot) } else { nil }
++        .presentationDetents([.medium])
+     }
+ }
+diff --git a/Modules/PandaModules/Sources/PrintFiles/PrintFilesListView.swift b/Modules/PandaModules/Sources/PrintFiles/PrintFilesListView.swift
+index ff0ee34..6f79e5c 100644
+--- a/Modules/PandaModules/Sources/PrintFiles/PrintFilesListView.swift
++++ b/Modules/PandaModules/Sources/PrintFiles/PrintFilesListView.swift
+@@ -4,23 +4,21 @@ import SwiftUI
+ public struct PrintFilesListView: View {
+     @State private var viewModel: PrintFilesViewModel
+     @State private var fileToConfirm: PrintFile?
++    @State private var fileToDelete: PrintFile?
+     private let host: String
+     private let accessCode: String
+-    private let amsUnits: [(unitId: Int, trays: [AMSTray])]
+     private let sendCommand: (PrinterCommand) -> Void
+     private let onPrintStarted: (PrintFile) -> Void
+ 
+     public init(
+         host: String,
+         accessCode: String,
+-        amsUnits: [(unitId: Int, trays: [AMSTray])] = [],
+         sendCommand: @escaping (PrinterCommand) -> Void = { _ in },
+         onPrintStarted: @escaping (PrintFile) -> Void = { _ in }
+     ) {
+         _viewModel = State(initialValue: PrintFilesViewModel(host: host, accessCode: accessCode))
+         self.host = host
+         self.accessCode = accessCode
+-        self.amsUnits = amsUnits
+         self.sendCommand = sendCommand
+         self.onPrintStarted = onPrintStarted
+     }
+@@ -47,13 +45,22 @@ public struct PrintFilesListView: View {
+                         description: Text("No .gcode.3mf files on the SD card.")
+                     )
+                 case .loaded:
+-                    List(viewModel.files) { file in
+-                        Button {
+-                            fileToConfirm = file
+-                        } label: {
+-                            PrintFileRow(file: file)
++                    List {
++                        ForEach(viewModel.files) { file in
++                            Button {
++                                fileToConfirm = file
++                            } label: {
++                                PrintFileRow(file: file)
++                            }
++                            .buttonStyle(.plain)
++                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
++                                Button(role: .destructive) {
++                                    fileToDelete = file
++                                } label: {
++                                    Label("Delete", systemImage: "trash")
++                                }
++                            }
+                         }
+-                        .buttonStyle(.plain)
+                     }
+                     .listStyle(.plain)
+                 }
+@@ -61,14 +68,13 @@ public struct PrintFilesListView: View {
+             .navigationTitle("Print")
+             .task { await viewModel.loadFiles() }
+             .sheet(item: $fileToConfirm) { file in
+-                PrintConfirmationSheet(file: file, amsUnits: amsUnits) { options in
+-                    let amsMapping = options.forcedTray.map { [$0.amsUnitId * 4 + $0.traySlot] }
++                PrintConfirmationSheet(file: file) { options in
+                     sendCommand(.projectFile(
+                         filePath: file.path,
+                         plateGcode: "Metadata/plate_1.gcode",
+                         subtaskName: file.displayName,
+                         useAMS: true,
+-                        amsMapping: amsMapping, // nil = let the printer auto-match, same as its touchscreen
++                        amsMapping: nil, // let the printer auto-match, same as its touchscreen
+                         flowCalibration: options.flowCalibration,
+                         bedLeveling: options.bedLeveling,
+                         timelapse: options.timelapse
+@@ -77,6 +83,24 @@ public struct PrintFilesListView: View {
+                     fileToConfirm = nil
+                 }
+             }
++            .confirmationDialog(
++                "Delete \(fileToDelete?.displayName ?? "this file")?",
++                isPresented: Binding(
++                    get: { fileToDelete != nil },
++                    set: { if !$0 { fileToDelete = nil } }
++                ),
++                titleVisibility: .visible
++            ) {
++                Button("Delete", role: .destructive) {
++                    if let file = fileToDelete {
++                        Task { await viewModel.deleteFile(file) }
++                    }
++                    fileToDelete = nil
++                }
++                Button("Cancel", role: .cancel) { fileToDelete = nil }
++            } message: {
++                Text("This removes the file from the printer's SD card. This can't be undone.")
++            }
+         }
+     }
+ }
+diff --git a/Modules/PandaModules/Sources/PrintFiles/PrintFilesViewModel.swift b/Modules/PandaModules/Sources/PrintFiles/PrintFilesViewModel.swift
+index 16e9917..c0d9b3c 100644
+--- a/Modules/PandaModules/Sources/PrintFiles/PrintFilesViewModel.swift
++++ b/Modules/PandaModules/Sources/PrintFiles/PrintFilesViewModel.swift
+@@ -49,4 +49,23 @@ public final class PrintFilesViewModel {
+             loadState = .failed(error.localizedDescription)
+         }
+     }
++
++    /// Deletes a file from the SD card. Removes it from `files` immediately
++    /// (optimistic) so the swipe feels instant; puts it back if the FTP
++    /// delete actually fails.
++    public func deleteFile(_ file: PrintFile) async {
++        guard let index = files.firstIndex(where: { $0.id == file.id }) else { return }
++        files.remove(at: index)
++
++        let service = FTPSService(host: host, accessCode: accessCode)
++        do {
++            try await service.connect()
++            try await service.delete(path: file.path)
++            await service.disconnect()
++            appLog(.info, category: logCategory, "Deleted \(file.path)")
++        } catch {
++            appLog(.error, category: logCategory, "Failed to delete \(file.path): \(error.localizedDescription)")
++            files.insert(file, at: min(index, files.count))
++        }
++    }
+ }
+diff --git a/PandaBeFree/App/PandaBeFreeApp.swift b/PandaBeFree/App/PandaBeFreeApp.swift
+index 1acee28..dae6f6e 100644
+--- a/PandaBeFree/App/PandaBeFreeApp.swift
++++ b/PandaBeFree/App/PandaBeFreeApp.swift
+@@ -53,7 +53,6 @@ struct PandaBeFreeApp: App {
+                         PrintFilesListView(
+                             host: printerIP,
+                             accessCode: accessCode,
+-                            amsUnits: dashboardViewModel.printerState.amsUnits.map { ($0.id, $0.trays) },
+                             sendCommand: { dashboardViewModel.mqttServiceRef.sendCommand($0) },
+                             onPrintStarted: { file in
+                                 dashboardViewModel.activePrintCache.registerPendingPrint(
+diff --git a/PandaBeFree/Services/ActivePrintCache.swift b/PandaBeFree/Services/ActivePrintCache.swift
+index 42f397f..1e8be7e 100644
+--- a/PandaBeFree/Services/ActivePrintCache.swift
++++ b/PandaBeFree/Services/ActivePrintCache.swift
+@@ -8,13 +8,17 @@ import UIKit
+ private let logCategory = "ActivePrintCache"
+ 
+ /// Holds thumbnail/time/weight/colors for the print the app itself just
+-/// started, so the dashboard can show them while printing without
+-/// re-fetching.
++/// started, so the dashboard can show them while printing.
++///
++/// This is a REAL cache: results are written to disk (`PrintInfoDiskCache`)
++/// keyed by SD-card file path. Printing the same file again — including
++/// after a force-quit + relaunch — reads from disk and skips the network
++/// entirely. The FTPS download only happens the first time a given file is
++/// seen (or if its disk cache entry was removed).
+ ///
+ /// Registered right after the print command is sent (see PrintFilesListView's
+-/// onPrintStarted), but the actual FTPS download is deferred until
+-/// DashboardViewModel observes gcode_state actually reach RUNNING — not
+-/// started immediately.
++/// onPrintStarted), but the actual fetch is deferred until DashboardViewModel
++/// observes gcode_state actually reach RUNNING — not started immediately.
+ ///
+ /// Why the delay: starting our own FTPS download of the same file at the
+ /// exact moment the print command is sent collided with the printer's own
+@@ -25,37 +29,38 @@ private let logCategory = "ActivePrintCache"
+ /// "couldn't parse the file" error with no connection to anything actually
+ /// wrong in the print command itself. Waiting for RUNNING means the printer
+ /// has already finished opening the file on its own before we touch it.
+-/// (Confirmed fixed in practice.)
++/// (Confirmed fixed in practice.) This delay is skipped on a cache hit, since
++/// no download happens in that case anyway.
+ ///
+ /// Cleared automatically when the printer leaves the RUNNING state (see
+-/// DashboardViewModel).
++/// DashboardViewModel) — clears the in-memory published state only; the disk
++/// cache entry for that file is kept so printing it again is instant.
+ ///
+-/// ⚠️ Background behavior: this download runs on Network.framework sockets,
+-/// not URLSession — so it CANNOT use iOS's real background-transfer session
+-/// (that mechanism only works for URLSession HTTP tasks). What this class
+-/// does instead is request a `beginBackgroundTask` grace period, which buys
+-/// roughly 30 seconds up to a few minutes (iOS decides, not guaranteed) once
+-/// the app is backgrounded. That covers briefly switching apps; it does NOT
+-/// mean the transfer reliably finishes if the phone is locked and left for a
+-/// while — iOS can and will suspend the process once the grace period ends,
+-/// same as any other iOS app without a registered background mode. There is
+-/// no "Background Activity" entry for this because no proper iOS background
++/// ⚠️ Background behavior: the download (on a cache miss) runs on
++/// Network.framework sockets, not URLSession — so it CANNOT use iOS's real
++/// background-transfer session (that mechanism only works for URLSession
++/// HTTP tasks). What this class does instead is request a
++/// `beginBackgroundTask` grace period, which buys roughly 30 seconds up to a
++/// few minutes (iOS decides, not guaranteed) once the app is backgrounded.
++/// That covers briefly switching apps; it does NOT mean the transfer
++/// reliably finishes if the phone is locked and left for a while — iOS can
++/// and will suspend the process once the grace period ends, same as any
++/// other iOS app without a registered background mode. There is no
++/// "Background Activity" entry for this because no proper iOS background
+ /// mode (background fetch, background URLSession, VoIP, etc.) is registered
+ /// — the beginBackgroundTask API doesn't produce one.
+ ///
+-/// ⚠️ Force-quit recovery: all of the above state is plain in-memory —
+-/// force-quitting the app (not just backgrounding it) kills the process and
+-/// wipes it, same as any other in-memory app state. What survives is a
+-/// single breadcrumb in SharedSettings (`lastStartedPrintFilePath`, just a
+-/// filename — not sensitive) written when the print starts and cleared when
+-/// it ends. On relaunch, `recoverIfNeeded` uses that breadcrumb to redo the
+-/// FTPS download and repopulate the card if the same print is still RUNNING
+-/// — this is a full re-fetch, not a restored cache, so it costs the same
+-/// network transfer again. It does not verify the breadcrumb still matches
+-/// the actual running job (e.g. if a different print started from the
+-/// touchscreen in between) — an edge case rare enough, and low-stakes enough
+-/// (a cosmetic dashboard card, not anything print-safety-related), not to be
+-/// worth the added complexity of cross-checking against subtask_name yet.
++/// Force-quit recovery: a small breadcrumb in SharedSettings
++/// (`lastStartedPrintFilePath`, just a filename — not sensitive) records
++/// which file this app last started, written when the print starts and
++/// cleared when it ends. On relaunch, `recoverIfNeeded` uses that breadcrumb
++/// to look the file up — a disk-cache hit repopulates the card instantly, a
++/// miss falls back to the FTPS download same as a first-time print. This
++/// does not verify the breadcrumb still matches the actual running job (e.g.
++/// if a different print started from the touchscreen in between) — an edge
++/// case rare enough, and low-stakes enough (a cosmetic dashboard card, not
++/// anything print-safety-related), not to be worth the added complexity of
++/// cross-checking against subtask_name yet.
+ ///
+ /// Known gap: this only works for prints started from this app, since
+ /// that's the only moment we know the exact SD-card file path. A print
+@@ -106,14 +111,26 @@ public final class ActivePrintCache {
+         printingDidStart()
+     }
+ 
+-    /// Call when gcode_state is observed transitioning into RUNNING. Starts
+-    /// the deferred FTPS download for whatever print was last registered.
++    /// Call when gcode_state is observed transitioning into RUNNING. Serves
++    /// from the on-disk cache if this exact file was seen before; otherwise
++    /// downloads once and writes the result to disk for next time.
+     public func printingDidStart() {
+         guard let pending else { return }
+         self.pending = nil
+-        isLoading = true
+         fileName = pending.file.displayName
+ 
++        if let cached = PrintInfoDiskCache.load(for: pending.file.path) {
++            appLog(.info, category: logCategory, "Cache hit for \(pending.file.path) — no download needed")
++            thumbnail = cached.thumbnail
++            estimatedSeconds = cached.estimatedSeconds
++            weightGrams = cached.weightGrams
++            colorHexes = cached.colorHexes
++            isLoading = false
++            return
++        }
++
++        isLoading = true
++
+         // Ask iOS for extra run time in case the app gets backgrounded
+         // mid-download — see the type's doc comment for what this can and
+         // can't guarantee.
+@@ -152,6 +169,13 @@ public final class ActivePrintCache {
+                 self.weightGrams = timeWeight.weightGrams
+                 self.colorHexes = colors
+                 self.isLoading = false
++                PrintInfoDiskCache.save(
++                    path: pending.file.path,
++                    thumbnail: thumbnailData,
++                    estimatedSeconds: timeWeight.predictionSeconds,
++                    weightGrams: timeWeight.weightGrams,
++                    colorHexes: colors
++                )
+                 appLog(.info, category: logCategory, "Cached info for \(pending.file.displayName)")
+             } catch {
+                 appLog(.error, category: logCategory, "Failed to cache \(pending.file.path): \(error.localizedDescription)")
+@@ -164,6 +188,8 @@ public final class ActivePrintCache {
+     /// Called when the printer leaves the RUNNING state (finished, failed,
+     /// stopped, or a different print started from elsewhere) — or when a new
+     /// print is registered before the previous one ever reached RUNNING.
++    /// Only clears the in-memory published state — the disk cache entry for
++    /// this file is kept so printing it again is instant.
+     public func clear() {
+         pending = nil
+         loadTask?.cancel()
+@@ -184,3 +210,64 @@ public final class ActivePrintCache {
+         backgroundTaskID = .invalid
+     }
+ }
++
++/// On-disk cache for parsed print-file metadata, keyed by SD-card file path.
++/// Lives in the app's ordinary Caches directory (not the shared app-group
++/// container — only the main app's own dashboard reads this, no widget or
++/// extension needs it). No eviction yet: entries are small (a thumbnail PNG
++/// plus a few bytes of JSON) and printed files don't accumulate fast enough
++/// for this to matter in practice.
++private enum PrintInfoDiskCache {
++    struct Loaded {
++        let thumbnail: Data?
++        let estimatedSeconds: Int?
++        let weightGrams: Double?
++        let colorHexes: [String]?
++    }
++
++    private struct Entry: Codable {
++        let estimatedSeconds: Int?
++        let weightGrams: Double?
++        let colorHexes: [String]?
++    }
++
++    private static var directoryURL: URL? {
++        guard let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
++        let dir = base.appendingPathComponent("ActivePrintCache", isDirectory: true)
++        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
++        return dir
++    }
++
++    /// SD-card paths are just filenames in practice (files live at SD root),
++    /// but sanitize defensively in case that ever changes.
++    private static func key(for path: String) -> String {
++        path.replacingOccurrences(of: "/", with: "_")
++    }
++
++    static func load(for path: String) -> Loaded? {
++        guard let dir = directoryURL else { return nil }
++        let base = dir.appendingPathComponent(key(for: path))
++        guard let jsonData = try? Data(contentsOf: base.appendingPathExtension("json")),
++              let entry = try? JSONDecoder().decode(Entry.self, from: jsonData)
++        else { return nil }
++        let thumbnail = try? Data(contentsOf: base.appendingPathExtension("png"))
++        return Loaded(
++            thumbnail: thumbnail,
++            estimatedSeconds: entry.estimatedSeconds,
++            weightGrams: entry.weightGrams,
++            colorHexes: entry.colorHexes
++        )
++    }
++
++    static func save(path: String, thumbnail: Data?, estimatedSeconds: Int?, weightGrams: Double?, colorHexes: [String]?) {
++        guard let dir = directoryURL else { return }
++        let base = dir.appendingPathComponent(key(for: path))
++        let entry = Entry(estimatedSeconds: estimatedSeconds, weightGrams: weightGrams, colorHexes: colorHexes)
++        if let jsonData = try? JSONEncoder().encode(entry) {
++            try? jsonData.write(to: base.appendingPathExtension("json"), options: .atomic)
++        }
++        if let thumbnail {
++            try? thumbnail.write(to: base.appendingPathExtension("png"), options: .atomic)
++        }
++    }
++}
