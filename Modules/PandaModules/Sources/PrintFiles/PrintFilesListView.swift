@@ -4,23 +4,21 @@ import SwiftUI
 public struct PrintFilesListView: View {
     @State private var viewModel: PrintFilesViewModel
     @State private var fileToConfirm: PrintFile?
+    @State private var fileToDelete: PrintFile?
     private let host: String
     private let accessCode: String
-    private let amsUnits: [(unitId: Int, trays: [AMSTray])]
     private let sendCommand: (PrinterCommand) -> Void
     private let onPrintStarted: (PrintFile) -> Void
 
     public init(
         host: String,
         accessCode: String,
-        amsUnits: [(unitId: Int, trays: [AMSTray])] = [],
         sendCommand: @escaping (PrinterCommand) -> Void = { _ in },
         onPrintStarted: @escaping (PrintFile) -> Void = { _ in }
     ) {
         _viewModel = State(initialValue: PrintFilesViewModel(host: host, accessCode: accessCode))
         self.host = host
         self.accessCode = accessCode
-        self.amsUnits = amsUnits
         self.sendCommand = sendCommand
         self.onPrintStarted = onPrintStarted
     }
@@ -47,13 +45,22 @@ public struct PrintFilesListView: View {
                         description: Text("No .gcode.3mf files on the SD card.")
                     )
                 case .loaded:
-                    List(viewModel.files) { file in
-                        Button {
-                            fileToConfirm = file
-                        } label: {
-                            PrintFileRow(file: file)
+                    List {
+                        ForEach(viewModel.files) { file in
+                            Button {
+                                fileToConfirm = file
+                            } label: {
+                                PrintFileRow(file: file)
+                            }
+                            .buttonStyle(.plain)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    fileToDelete = file
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
                         }
-                        .buttonStyle(.plain)
                     }
                     .listStyle(.plain)
                 }
@@ -61,14 +68,13 @@ public struct PrintFilesListView: View {
             .navigationTitle("Print")
             .task { await viewModel.loadFiles() }
             .sheet(item: $fileToConfirm) { file in
-                PrintConfirmationSheet(file: file, amsUnits: amsUnits) { options in
-                    let amsMapping = options.forcedTray.map { [$0.amsUnitId * 4 + $0.traySlot] }
+                PrintConfirmationSheet(file: file) { options in
                     sendCommand(.projectFile(
                         filePath: file.path,
                         plateGcode: "Metadata/plate_1.gcode",
                         subtaskName: file.displayName,
                         useAMS: true,
-                        amsMapping: amsMapping, // nil = let the printer auto-match, same as its touchscreen
+                        amsMapping: nil, // let the printer auto-match, same as its touchscreen
                         flowCalibration: options.flowCalibration,
                         bedLeveling: options.bedLeveling,
                         timelapse: options.timelapse
@@ -76,6 +82,24 @@ public struct PrintFilesListView: View {
                     onPrintStarted(file)
                     fileToConfirm = nil
                 }
+            }
+            .confirmationDialog(
+                "Delete \(fileToDelete?.displayName ?? "this file")?",
+                isPresented: Binding(
+                    get: { fileToDelete != nil },
+                    set: { if !$0 { fileToDelete = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    if let file = fileToDelete {
+                        Task { await viewModel.deleteFile(file) }
+                    }
+                    fileToDelete = nil
+                }
+                Button("Cancel", role: .cancel) { fileToDelete = nil }
+            } message: {
+                Text("This removes the file from the printer's SD card. This can't be undone.")
             }
         }
     }

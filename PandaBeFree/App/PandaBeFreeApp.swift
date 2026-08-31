@@ -53,7 +53,6 @@ struct PandaBeFreeApp: App {
                         PrintFilesListView(
                             host: printerIP,
                             accessCode: accessCode,
-                            amsUnits: dashboardViewModel.printerState.amsUnits.map { ($0.id, $0.trays) },
                             sendCommand: { dashboardViewModel.mqttServiceRef.sendCommand($0) },
                             onPrintStarted: { file in
                                 dashboardViewModel.activePrintCache.registerPendingPrint(

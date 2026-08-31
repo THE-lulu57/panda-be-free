@@ -80,15 +80,23 @@ public actor FTPSService {
         controlConnection = nil
     }
 
+    /// Deletes a file on the SD card. Standard FTP DELE — no data channel
+    /// needed, just a control-connection command/reply like USER/PASS.
+    public func delete(path: String) async throws {
+        try await sendCommand("DELE \(path)", expecting: 250)
+    }
+
     /// Lists files in a directory (non-recursive). `path` defaults to SD root.
     public func list(path: String = "/") async throws -> [FTPFileEntry] {
         let dataConnection = try await enterPassiveMode()
         try await sendCommand("LIST \(path)", expecting: 150)
         let raw = try await readAllData(from: dataConnection)
         _ = try await readReply(expecting: 226) // transfer complete
+        // Diagnostic: log the raw listing text so an unrecognized server
+        // format shows up directly in the session log instead of silently
+        // parsing to zero entries.
         let rawText = String(data: raw, encoding: .utf8) ?? "(non-UTF8 data, \(raw.count) bytes)"
         appLog(.info, category: logCategory, "Raw LIST response (\(raw.count) bytes): \(rawText.prefix(1000))")
-
         let parsed = Self.parseListing(raw)
         appLog(.info, category: logCategory, "Parsed \(parsed.count) entries: \(parsed.map { "\($0.name)[dir=\($0.isDirectory)]" })")
         return parsed
@@ -149,6 +157,17 @@ public actor FTPSService {
         return NWConnection(host: .init(host), port: nwPort, using: params)
     }
 
+    /// Bridges NWConnection's state callback to async/await.
+    ///
+    /// ⚠️ Important: `stateUpdateHandler` is NOT a one-shot callback — it
+    /// stays attached to the connection and fires again on every later state
+    /// change (in particular `.cancelled`, when `disconnect()` or the
+    /// `defer { connection.cancel() }` in `readAllData` runs). If left in
+    /// place after the continuation resumes once, that later `.cancelled`
+    /// event calls `continuation.resume()` a second time, which is a fatal
+    /// Swift Concurrency error ("SWIFT TASK CONTINUATION MISUSE") — an
+    /// unrecoverable crash, not a catchable error. Clearing the handler the
+    /// moment we resume is what prevents that.
     private func waitUntilReady(_ connection: NWConnection) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             connection.stateUpdateHandler = { [weak connection] state in
@@ -169,7 +188,6 @@ public actor FTPSService {
             connection.start(queue: .global(qos: .userInitiated))
         }
     }
-
 
     // MARK: - Control connection I/O
 
@@ -242,7 +260,7 @@ public actor FTPSService {
         }
         return collected
     }
-    
+
     // MARK: - LIST parsing
 
     /// Parses a LIST response line by line, trying both listing styles
@@ -269,8 +287,11 @@ public actor FTPSService {
     }
 
     private static func parseDOSLine(_ line: String) -> FTPFileEntry? {
+        // e.g. "08-27-26  10:30AM         5242880 model.gcode.3mf"
+        //   or "08-27-26  10:30AM       <DIR>          cache"
         let parts = line.split(separator: " ", omittingEmptySubsequences: true)
         guard parts.count >= 4 else { return nil }
+        // parts[0] = date, parts[1] = time, parts[2] = size or "<DIR>"
         let isDirectory = parts[2] == "<DIR>"
         let size = isDirectory ? 0 : (Int64(parts[2]) ?? -1)
         guard isDirectory || size >= 0 else { return nil }
@@ -278,6 +299,3 @@ public actor FTPSService {
         return FTPFileEntry(name: name, sizeBytes: size, isDirectory: isDirectory)
     }
 }
-
-
-    // 

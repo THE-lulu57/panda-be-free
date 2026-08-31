@@ -49,4 +49,23 @@ public final class PrintFilesViewModel {
             loadState = .failed(error.localizedDescription)
         }
     }
+
+    /// Deletes a file from the SD card. Removes it from `files` immediately
+    /// (optimistic) so the swipe feels instant; puts it back if the FTP
+    /// delete actually fails.
+    public func deleteFile(_ file: PrintFile) async {
+        guard let index = files.firstIndex(where: { $0.id == file.id }) else { return }
+        files.remove(at: index)
+
+        let service = FTPSService(host: host, accessCode: accessCode)
+        do {
+            try await service.connect()
+            try await service.delete(path: file.path)
+            await service.disconnect()
+            appLog(.info, category: logCategory, "Deleted \(file.path)")
+        } catch {
+            appLog(.error, category: logCategory, "Failed to delete \(file.path): \(error.localizedDescription)")
+            files.insert(file, at: min(index, files.count))
+        }
+    }
 }
